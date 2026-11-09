@@ -1,0 +1,22 @@
+{
+  "name": "@wierdbytes/pi-wierd-mem",
+  "version": "0.1.0",
+  "description": "pi extension for wierd-mem: injects the approved memory index into sessions, adds memory_search / memory_read / memory_inbox tools and runs dreams for the wierd-mem server.",
+  "type": "module",
+  "private": true,
+  "keywords": ["pi-package", "pi", "coding-agent", "extension", "memory", "dreaming", "agent-memory"],
+  "license": "MIT",
+  "pi": { "extensions": ["./index.ts"] },
+  "dependencies": {
+    "@wierd-mem/core": "workspace:*"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": ">=0.99.0",
+    "@earendil-works/pi-coding-agent": ">=0.99.0"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-ai": "^1.5.0",
+    "@earendil-works/pi-coding-agent": "^1.5.0",
+    "typebox": "^1.1.24"
+  }
+}

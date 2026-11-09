@@ -1,0 +1,13 @@
+#!/bin/sh
+# wmem: the wierd-mem command line. Runs the TypeScript sources with bun.
+SELF="$0"
+while [ -L "$SELF" ]; do
+	LINK="$(readlink "$SELF")"
+	case "$LINK" in
+		/*) SELF="$LINK" ;;
+		*) SELF="$(dirname "$SELF")/$LINK" ;;
+	esac
+done
+ROOT="$(cd "$(dirname "$SELF")/.." && pwd)"
+BUN="${WMEM_BUN:-$(command -v bun || echo "$HOME/.bun/bin/bun")}"
+exec "$BUN" "$ROOT/packages/server/src/cli.ts" "$@"
