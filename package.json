@@ -7,6 +7,7 @@
   ],
   "scripts": {
     "serve": "bun packages/server/src/cli.ts serve",
+    "build:pi": "bun scripts/build-pi.ts",
     "test": "bun test",
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },

@@ -5,7 +5,8 @@ Guidance for AI agents working in this repo.
 ## What this is
 
 wierd-memory: long-term memory for the pi coding agent, stored as Markdown notes in a git repository, with a local
-server (the only writer), a web UI, a pi extension and a Herdr mod. Bun workspace; TypeScript is run directly (no build step). Read `README.md` first.
+server (the only writer), a web UI, a pi extension and a Herdr mod. Bun workspace; TypeScript is run directly — the
+one build step is the npm bundle of the pi extension (`bun run build:pi`). Read `README.md` first.
 
 ## Layout
 
@@ -31,8 +32,13 @@ packages/server/src/
   cli.ts serve.ts       `wmem`
 packages/web/           React UI, bundled by Bun's HTML import (no other build tooling); `import type` from core only
 packages/pi/            the pi extension (index.ts) and the dream (runner.ts → pipeline.ts, llm.ts)
+                        package.json is the private development manifest; npm gets dist/ (below)
 packages/herdr-mod/     the Herdr panel (JavaScript for gpui-kit; installed by `wmem herdr install`)
 scripts/seed-review.ts  a made-up dream for a sandbox server
+scripts/build-pi.ts     `bun run build:pi`: packages/pi/dist — index.js (core inlined; pi's own packages external),
+                        the published package.json (@wierdbytes/pi-memory), README, CHANGELOG, LICENSE
+.github/workflows/publish.yml   on push to main: typecheck, tests, build; publishes packages/pi/dist when its version
+                        is not on npm yet (Trusted Publishing — the file name is registered on npmjs.com)
 ```
 
 ## Rules of the design
@@ -52,6 +58,9 @@ scripts/seed-review.ts  a made-up dream for a sandbox server
   byte-identical until its note is edited.
 - All mutations go through `App.lock`. Do not call `lock` from inside a locked function (it would wait for itself).
 - The server is the only writer of `.local/`; the pi extension, the mod and the CLI use the HTTP API.
+- The pi extension runs from an npm install too: it must not need the repository (a path relative to
+  `import.meta.url` only as an optional fallback, like `checkoutBin` in client.ts; no files of other packages);
+  what it needs from core is bundled. The dream runner is the exception — the server starts it from its own checkout.
 - A pi session must never hang on memory: the extension's calls have timeouts and failures are values.
   Network git (push, fetch) never runs inside the lock except the merge of what was fetched.
 
@@ -60,6 +69,9 @@ scripts/seed-review.ts  a made-up dream for a sandbox server
 - `bun test` — needs `git` on PATH (server and pipeline tests work on real repositories in temp dirs, with a bare
   repository as the remote).
 - `bun run typecheck`.
+- The npm package: `bun run build:pi && npm pack --dry-run ./packages/pi/dist`, and that pi loads it:
+  `pi -p --no-session --no-extensions -e packages/pi/dist "/memory"`. Releasing: bump `packages/pi/package.json`
+  `version` and `packages/pi/CHANGELOG.md`; CI publishes on push to main.
 - The mod: `wmem herdr install` runs `herdr-app check`.
 - To try something by hand use a sandbox server, never the real one (`~/.wierd-memory`, port 7433 — its repository is
   the user's real memory and is pushed to GitHub): `WMEM_HOME=/tmp/wmem-dev WMEM_PORT=17433 bin/wmem serve`, then

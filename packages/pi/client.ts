@@ -4,19 +4,26 @@
  * pi sessions must never hang on memory: every call has a short timeout and a
  * failure is a value (`undefined`, or a thrown `ServerDown` the caller turns
  * into a line of text for the model or the user). When nothing answers, the
- * server is started once in the background (`bin/wmem serve`), unless
- * `WMEM_NO_AUTOSTART=1`.
+ * server is started once in the background, unless `WMEM_NO_AUTOSTART=1` —
+ * see `launch()`: the extension may run from the repository or from an npm
+ * install, so it never assumes where the server's code is.
  */
 
-import { spawn } from "node:child_process";
-import { closeSync, existsSync, mkdirSync, openSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { execFile, spawn } from "node:child_process";
+import { accessSync, closeSync, constants, existsSync, mkdirSync, openSync } from "node:fs";
+import { homedir } from "node:os";
+import { delimiter, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { homePaths, loadConfig, serverUrl } from "@wierd-memory/core";
 
+const SETUP = "start the wierd-memory server: wmem service install (or wmem serve) — https://github.com/wierdbytes/wierd-memory#setup";
+
+/** Why the last attempt to start the server did not work (shown with `ServerDown`). */
+let startFailure: string | undefined;
+
 export class ServerDown extends Error {
 	constructor(readonly url: string) {
-		super(`the wierd-memory server is not running at ${url} (start it: wmem serve)`);
+		super(`the wierd-memory server is not running at ${url}${startFailure ? ` (${startFailure})` : ""}; ${SETUP}`);
 	}
 }
 
@@ -29,7 +36,10 @@ export class ApiError extends Error {
 	}
 }
 
-const REPO = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
+/** The launchd agent `wmem service install` writes (macOS). */
+const LABEL = "dev.wierd-memory.server";
+const PLIST = join(homedir(), "Library", "LaunchAgents", `${LABEL}.plist`);
+
 let starting: Promise<boolean> | undefined;
 
 export class Client {
@@ -88,23 +98,85 @@ export class Client {
 	private async start(waitMs: number): Promise<boolean> {
 		if (await this.up()) return true;
 		if (process.env.WMEM_NO_AUTOSTART === "1" || process.env.WMEM_URL) return false;
-		const bin = join(REPO, "bin", "wmem");
-		if (!existsSync(bin)) return false;
-		const logs = homePaths().logs;
-		mkdirSync(logs, { recursive: true });
-		const fd = openSync(join(logs, "server.log"), "a");
-		try {
-			spawn(bin, ["serve"], { detached: true, stdio: ["ignore", fd, fd], cwd: REPO }).unref();
-		} catch {
+		const how = await launch();
+		if (typeof how !== "string") {
+			startFailure = how.failed;
 			return false;
-		} finally {
-			closeSync(fd);
 		}
 		const deadline = Date.now() + waitMs;
 		while (Date.now() < deadline) {
 			await new Promise((r) => setTimeout(r, 300));
-			if (await this.up(600)) return true;
+			if (await this.up(600)) {
+				startFailure = undefined;
+				return true;
+			}
 		}
+		startFailure = `started it (${how}) but it did not answer in ${Math.round(waitMs / 1000)}s`;
 		return false;
 	}
+}
+
+/**
+ * Start the server in the background, the way it is installed here:
+ * 1. the launchd agent of `wmem service install` → `launchctl kickstart` (only for the default home:
+ *    a run with `WMEM_HOME` set means another server, e.g. a sandbox);
+ * 2. `wmem` on PATH → `wmem serve`, detached, logging to `<home>/logs/server.log`;
+ * 3. a repository checkout this file runs from (`pi install <repo>/packages/pi`) → its `bin/wmem serve`.
+ * Resolves to how it was started, or why it could not be.
+ */
+async function launch(): Promise<string | { failed: string }> {
+	if (process.platform === "darwin" && !process.env.WMEM_HOME && existsSync(PLIST)) {
+		const target = `gui/${process.getuid?.() ?? 501}`;
+		if ((await run("launchctl", ["kickstart", `${target}/${LABEL}`])) === 0) return "launchctl kickstart";
+		// installed but not loaded (booted out): load it, which starts it (RunAtLoad)
+		if ((await run("launchctl", ["bootstrap", target, PLIST])) === 0) return "launchctl bootstrap";
+	}
+	const bin = onPath("wmem") ?? checkoutBin();
+	if (!bin) return { failed: "found neither its launchd agent nor wmem on PATH" };
+	const logs = homePaths().logs;
+	let fd: number | undefined;
+	try {
+		mkdirSync(logs, { recursive: true });
+		fd = openSync(join(logs, "server.log"), "a");
+		const child = spawn(bin, ["serve"], { detached: true, stdio: ["ignore", fd, fd], cwd: homedir() });
+		child.on("error", () => undefined); // e.g. not executable after all: the wait for it to answer says so
+		child.unref();
+		return `${bin} serve`;
+	} catch (err) {
+		return { failed: `${bin} serve: ${err instanceof Error ? err.message : String(err)}` };
+	} finally {
+		if (fd !== undefined) closeSync(fd);
+	}
+}
+
+/** Exit code of a short command (or -1), never waiting more than a few seconds. */
+function run(cmd: string, args: string[]): Promise<number> {
+	return new Promise((done) => {
+		try {
+			execFile(cmd, args, { timeout: 5000 }, (err) => done(err ? (typeof err.code === "number" ? err.code : -1) : 0));
+		} catch {
+			done(-1);
+		}
+	});
+}
+
+function onPath(name: string): string | undefined {
+	for (const dir of (process.env.PATH ?? "").split(delimiter)) {
+		if (!dir) continue;
+		const file = join(dir, name);
+		try {
+			accessSync(file, constants.X_OK);
+			return file;
+		} catch {
+			// next
+		}
+	}
+	return undefined;
+}
+
+/** `bin/wmem` of the repository when this file runs from a checkout (`packages/pi/client.ts`); not in the npm bundle. */
+function checkoutBin(): string | undefined {
+	const repo = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
+	const bin = join(repo, "bin", "wmem");
+	return existsSync(bin) && existsSync(join(repo, "packages", "server", "src", "cli.ts")) ? bin : undefined;
 }

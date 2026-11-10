@@ -13,6 +13,6 @@
     "resolveJsonModule": true,
     "types": ["bun"]
   },
-  "include": ["packages/core/src", "packages/server/src", "packages/web/src", "packages/pi"],
+  "include": ["packages/core/src", "packages/server/src", "packages/web/src", "packages/pi", "scripts"],
   "exclude": ["**/node_modules"]
 }

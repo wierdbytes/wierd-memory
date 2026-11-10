@@ -45,10 +45,13 @@ wmem service install      # launchd: the server starts at login and is restarted
 wmem status
 wmem open                 # http://127.0.0.1:7433
 
-pi install ~/me/dev/wierd-memory/packages/pi  # the pi extension (absolute path)
+pi install npm:@wierdbytes/pi-memory          # the pi extension (packages/pi/README.md)
 wmem dream schedule on                        # let the server dream on its own (off until you say so)
 wmem herdr install                            # the Herdr panel (see packages/herdr-mod/README.md)
 ```
+
+To work on the extension itself, install it from the checkout instead (an absolute path; pi loads `index.ts` from
+source): `pi install ~/me/dev/wierd-memory/packages/pi`.
 
 ## How memory is kept
 
@@ -167,7 +170,8 @@ wmem sync                            # pull from and push to the remote now
 
 In pi: `/memory` (what this session got), `/dream [status|run|review|dry|index|log|open]`, `/remember <text>`,
 `--no-memory`. The agent has `memory_search`, `memory_read` and `memory_inbox`. If the server is not running a
-session simply goes without memory (the extension tries to start it once).
+session simply goes without memory (the extension tries to start it once: the launchd agent of
+`wmem service install`, else `wmem serve` when `wmem` is on `PATH`).
 
 ## Dreams
 
@@ -223,3 +227,15 @@ WMEM_URL=http://127.0.0.1:17433 bun scripts/seed-review.ts            # a made-u
 ```
 
 See [`AGENTS.md`](AGENTS.md) for the layout of the code.
+
+### Releasing the pi extension
+
+The extension is published to npm as [`@wierdbytes/pi-memory`](https://www.npmjs.com/package/@wierdbytes/pi-memory):
+`bun run build:pi` bundles it (with `packages/core` inlined — core is not published on its own) into
+`packages/pi/dist` with a manifest of its own; `packages/pi/package.json` stays private.
+
+To release: bump `version` in `packages/pi/package.json`, add its entry to `packages/pi/CHANGELOG.md`, push to
+`main`. [`.github/workflows/publish.yml`](.github/workflows/publish.yml) runs the checks on every push and publishes
+when that version is not on npm yet, through npm Trusted Publishing (OIDC, no token). The very first version is
+published by hand (a package must exist before it can have a trusted publisher); then `npm trust github` registers
+this workflow for it.

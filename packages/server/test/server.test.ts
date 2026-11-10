@@ -30,7 +30,9 @@ let app: App;
 let home: string;
 /** The memory repository of the server under test. */
 let memDir: string;
-const sh = (cwd: string, ...args: string[]) => execFileSync("git", args, { cwd, encoding: "utf-8" }).trim();
+// An identity of its own: the commits the tests make with git must not depend on the machine's git config (CI has none).
+const GIT_ENV = { GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t" };
+const sh = (cwd: string, ...args: string[]) => execFileSync("git", args, { cwd, encoding: "utf-8", env: { ...process.env, ...GIT_ENV } }).trim();
 const ev: Evidence[] = [{ s: "01a1b2c3-0000-7000-8000-000000000001", e: ["aaaa1111"], date: "2026-11-06", kind: "user" }];
 
 async function call<T>(method: string, path: string, body?: unknown, headers: Record<string, string> = {}): Promise<{ status: number; data: T }> {

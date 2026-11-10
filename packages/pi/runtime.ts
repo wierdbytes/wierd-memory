@@ -126,7 +126,7 @@ export class Runtime {
 						return `Memory is unavailable: ${why(again)}`;
 					}
 				}
-				return `Memory is unavailable: ${err.message}`;
+				return `Memory is unavailable: ${new ServerDown(err.url).message}`; // now with why it could not be started
 			}
 			return `Memory is unavailable: ${why(err)}`;
 		}
