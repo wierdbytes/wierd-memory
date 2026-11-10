@@ -7,7 +7,7 @@
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { INBOX_KINDS } from "@wierd-mem/core";
+import { INBOX_KINDS } from "@wierd-memory/core";
 import { Type } from "typebox";
 import type { Runtime } from "./runtime.ts";
 

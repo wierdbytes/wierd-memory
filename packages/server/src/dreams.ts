@@ -31,7 +31,7 @@ import {
 	pendingSessions,
 	piAgentDir,
 	type RunInfo,
-} from "@wierd-mem/core";
+} from "@wierd-memory/core";
 import { type App, bad, HttpError, notFound } from "./app.ts";
 import { MAIN } from "./git.ts";
 

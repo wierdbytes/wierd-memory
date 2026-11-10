@@ -1,5 +1,5 @@
 {
-  "name": "@wierd-mem/server",
+  "name": "@wierd-memory/server",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -7,7 +7,7 @@
     "wmem": "./src/cli.ts"
   },
   "dependencies": {
-    "@wierd-mem/core": "workspace:*",
+    "@wierd-memory/core": "workspace:*",
     "yaml": "^2.6.0"
   }
 }

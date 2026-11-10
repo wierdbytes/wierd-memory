@@ -1,8 +1,8 @@
 /**
- * Names: scopes, project keys, run ids, and where wierd-mem keeps its files.
+ * Names: scopes, project keys, run ids, and where wierd-memory keeps its files.
  *
  * ```
- * ~/.wierd-mem/                 (WMEM_HOME)
+ * ~/.wierd-memory/              (WMEM_HOME)
  *   config.json                 settings
  *   logs/server.log
  *   memory/                     the git repository (`memory.dir`); its approved branch is checked out here
@@ -82,7 +82,7 @@ export interface HomePaths {
 }
 
 export function wmemHome(): string {
-	return expandHome(process.env.WMEM_HOME || "~/.wierd-mem");
+	return expandHome(process.env.WMEM_HOME || "~/.wierd-memory");
 }
 
 /** `memoryDir`: `memory.dir` from the settings (empty: `memory` under the home). */

@@ -1,5 +1,5 @@
 #!/bin/sh
-# wmem: the wierd-mem command line. Runs the TypeScript sources with bun.
+# wmem: the wierd-memory command line. Runs the TypeScript sources with bun.
 SELF="$0"
 while [ -L "$SELF" ]; do
 	LINK="$(readlink "$SELF")"

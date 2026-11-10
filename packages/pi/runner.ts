@@ -1,6 +1,6 @@
 /**
  * Entry point of the headless dream process. Not listed in `pi.extensions`:
- * the wierd-mem server starts
+ * the wierd-memory server starts
  *
  *   pi -p --no-session --no-extensions -e <provider ext> -e runner.ts "/wmem-dream-run --run-id …"
  *
@@ -13,8 +13,8 @@
  */
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import type { DreamSubmit, DreamSubmitResult, DreamWorkspace, RunInfo } from "@wierd-mem/core";
-import { homePaths, loadConfig, wmemHome } from "@wierd-mem/core";
+import type { DreamSubmit, DreamSubmitResult, DreamWorkspace, RunInfo } from "@wierd-memory/core";
+import { homePaths, loadConfig, wmemHome } from "@wierd-memory/core";
 import { Client } from "./client.ts";
 import { Llm } from "./llm.ts";
 import { dream, parseRunArgs, type RunArgs, runLogger } from "./pipeline.ts";
@@ -54,7 +54,7 @@ export async function runDream(ctx: ExtensionContext, args: RunArgs): Promise<vo
 
 export default function wmemDreamRunner(pi: ExtensionAPI) {
 	pi.registerCommand("wmem-dream-run", {
-		description: "wierd-mem: run a dream in this process (used by the wierd-mem server)",
+		description: "wierd-memory: run a dream in this process (used by the wierd-memory server)",
 		handler: async (args, ctx) => {
 			await runDream(ctx, parseRunArgs(args ?? ""));
 		},

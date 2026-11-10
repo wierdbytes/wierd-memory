@@ -39,7 +39,7 @@ import {
 	type SkillDraft,
 	slugify,
 	today,
-} from "@wierd-mem/core";
+} from "@wierd-memory/core";
 import { MAIN, type Repo } from "./git.ts";
 import { parseNote, parseSkill, renderNote, renderSkill, scopeOfPath, skillOfPath } from "./notefile.ts";
 

@@ -4,7 +4,7 @@ Guidance for AI agents working in this repo.
 
 ## What this is
 
-wierd-mem: long-term memory for the pi coding agent, stored as Markdown notes in a git repository, with a local
+wierd-memory: long-term memory for the pi coding agent, stored as Markdown notes in a git repository, with a local
 server (the only writer), a web UI, a pi extension and a Herdr mod. Bun workspace; TypeScript is run directly (no build step). Read `README.md` first.
 
 ## Layout
@@ -28,7 +28,7 @@ packages/server/src/
   dreams.ts             schedule, spawn and watch the headless pi that dreams; what a dream starts from
   searcher.ts           memory_search / memory_read / evidence
   http.ts               routes (keep docs/api.md and core/api.ts in step with it)
-  importer.ts           pi-dream's local state (`.local`) and settings → wierd-mem's
+  importer.ts           pi-dream's local state (`.local`) and settings → wierd-memory's
   cli.ts serve.ts       `wmem`
 packages/web/           React UI, bundled by Bun's HTML import (no other build tooling); `import type` from core only
 packages/pi/            the pi extension (index.ts) and the dream (runner.ts → pipeline.ts, llm.ts)
@@ -61,7 +61,7 @@ scripts/seed-review.ts  a made-up dream for a sandbox server
   repository as the remote).
 - `bun run typecheck`.
 - The mod: `wmem herdr install` runs `herdr-app check`.
-- To try something by hand use a sandbox server, never the real one (`~/.wierd-mem`, port 7433 — its repository is
+- To try something by hand use a sandbox server, never the real one (`~/.wierd-memory`, port 7433 — its repository is
   the user's real memory and is pushed to GitHub): `WMEM_HOME=/tmp/wmem-dev WMEM_PORT=17433 bin/wmem serve`, then
   `WMEM_URL=http://127.0.0.1:17433 bun scripts/seed-review.ts`. CLI calls against it need the same `WMEM_HOME`
   and `WMEM_PORT`.

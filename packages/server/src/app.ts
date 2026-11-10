@@ -58,7 +58,7 @@ import {
 	type StatusInfo,
 	today,
 	type WmemConfig,
-} from "@wierd-mem/core";
+} from "@wierd-memory/core";
 import { Dreams } from "./dreams.ts";
 import { MAIN, Repo } from "./git.ts";
 import { MemoryStore, type ScopeRow } from "./memory.ts";
@@ -67,8 +67,8 @@ import { Searcher } from "./searcher.ts";
 import { StateStore } from "./state.ts";
 
 export const VERSION = "0.2.0";
-export const DREAM_AUTHOR = "wierd-mem dream <dream@wierd-mem.local>";
-export const SYSTEM_AUTHOR = "wierd-mem <system@wierd-mem.local>";
+export const DREAM_AUTHOR = "wierd-memory dream <dream@wierd-memory.local>";
+export const SYSTEM_AUTHOR = "wierd-memory <system@wierd-memory.local>";
 
 export class HttpError extends Error {
 	constructor(

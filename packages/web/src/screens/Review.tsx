@@ -3,7 +3,7 @@
  * and accept, or reject — with bulk actions for the rest.
  */
 
-import type { NoteEdit, ReviewComment, ReviewDecision, ReviewItem, ReviewSummary, ReviewView, RunInfo, ScopeInfo } from "@wierd-mem/core";
+import type { NoteEdit, ReviewComment, ReviewDecision, ReviewItem, ReviewSummary, ReviewView, RunInfo, ScopeInfo } from "@wierd-memory/core";
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api.ts";
 import type { ScopeOption } from "../components/NoteForm.tsx";

@@ -3,7 +3,7 @@
  * purpose (charter) and what its index puts into every session.
  */
 
-import type { NoteView, ScopeInfo } from "@wierd-mem/core";
+import type { NoteView, ScopeInfo } from "@wierd-memory/core";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api, type PromptsInfo, type SkillInfo } from "../api.ts";
 import { Markdown, TitleText } from "../components/Markdown.tsx";

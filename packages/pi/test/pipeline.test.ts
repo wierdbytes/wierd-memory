@@ -7,7 +7,7 @@ import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { DreamSubmit, ReviewView, Stage, StageModel, StageUsage } from "@wierd-mem/core";
+import type { DreamSubmit, ReviewView, Stage, StageModel, StageUsage } from "@wierd-memory/core";
 import { App } from "../../server/src/app.ts";
 import { type DreamApi, dream, type DreamLlm, parseRunArgs } from "../pipeline.ts";
 

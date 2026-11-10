@@ -1,5 +1,5 @@
 /**
- * Settings of wierd-mem (`~/.wierd-mem/config.json`).
+ * Settings of wierd-memory (`~/.wierd-memory/config.json`).
  *
  * Missing, unknown or malformed fields fall back to defaults, so a hand-edited
  * file can never break the server. `WMEM_PORT` overrides the port.
@@ -26,7 +26,7 @@ export interface WmemConfig {
 	port: number;
 	/** The git repository memory is kept in. */
 	memory: {
-		/** Its folder; empty: `memory` under the wierd-mem home (`~/.wierd-mem/memory`). */
+		/** Its folder; empty: `memory` under the wierd-memory home (`~/.wierd-memory/memory`). */
 		dir: string;
 		/** The branch that is approved memory: what sessions get. */
 		branch: string;

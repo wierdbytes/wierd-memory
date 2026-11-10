@@ -55,7 +55,7 @@ import {
 	runTitle,
 	sameNote,
 	today,
-} from "@wierd-mem/core";
+} from "@wierd-memory/core";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { type App, bad, DREAM_AUTHOR, HttpError, notFound, scopeShortName, SYSTEM_AUTHOR } from "./app.ts";

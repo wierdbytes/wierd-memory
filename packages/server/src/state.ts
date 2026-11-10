@@ -18,8 +18,8 @@
 import { randomBytes } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import type { AgentsProposal, HomePaths, InboxItem, NoteStats, ReportData, ReviewComment, ReviewDecision, RunInfo, SessionMark } from "@wierd-mem/core";
-import { today } from "@wierd-mem/core";
+import type { AgentsProposal, HomePaths, InboxItem, NoteStats, ReportData, ReviewComment, ReviewDecision, RunInfo, SessionMark } from "@wierd-memory/core";
+import { today } from "@wierd-memory/core";
 
 const now = () => new Date().toISOString();
 

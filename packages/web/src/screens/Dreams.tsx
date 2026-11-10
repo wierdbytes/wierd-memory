@@ -3,7 +3,7 @@
  * memory — start one, watch it, see what past ones reported.
  */
 
-import type { DreamStatus, ReportData, ReportItem, RunInfo, ScopeInfo, Stage } from "@wierd-mem/core";
+import type { DreamStatus, ReportData, ReportItem, RunInfo, ScopeInfo, Stage } from "@wierd-memory/core";
 import { useEffect, useRef, useState } from "react";
 import { api, type DreamMode, type RunDetail } from "../api.ts";
 import { EvidenceChips } from "../components/Evidence.tsx";

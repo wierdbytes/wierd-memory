@@ -1,4 +1,4 @@
-// Memory: what wierd-mem remembers for pi, beside Files and Changes.
+// Memory: what wierd-memory remembers for pi, beside Files and Changes.
 //
 // Like Files it follows the focused pane: that pane's project and the global
 // notes open on top (what pi loads into a session there), every other project
@@ -9,7 +9,7 @@
 // on top, to accept, edit or reject; then the inbox (what waits for the next
 // dream); the dream's state is at the bottom.
 //
-// Memory lives in the wierd-mem server (a local HTTP API, see api.js); this
+// Memory lives in the wierd-memory server (a local HTTP API, see api.js); this
 // file asks it and draws the list. cards.js draws a note, review.js a proposal.
 
 import { View, div, svg } from "gpui-kit";
@@ -48,7 +48,7 @@ function location() {
 function pathTo(node, path = []) {
   if (!node) return null;
   const here = [...path, node];
-  if (node.content?.mod === "wierd-mem") return here;
+  if (node.content?.mod === "wierd-memory") return here;
   for (const child of node.children ?? []) {
     const found = pathTo(child, here);
     if (found) return found;
@@ -71,7 +71,7 @@ function onScreen() {
 
 const message = (e) => String(e?.message ?? e).slice(0, 300);
 
-export default class WierdMem extends View {
+export default class WierdMemory extends View {
   init(_props, cx) {
     // Set once server.json is read (`wmem herdr install` writes it).
     this.server = DEFAULT_SERVER;
@@ -141,8 +141,8 @@ export default class WierdMem extends View {
     submit(this.fWhen, this.fBody);
     submit(this.fBody, null);
     cx.spawn((cx) => this.live(cx));
-    // keys.json: "wierd-mem.search" puts the keyboard in the search field;
-    // "wierd-mem.open-<note id>" opens that note's card; "wierd-mem.review"
+    // keys.json: "wierd-memory.search" puts the keyboard in the search field;
+    // "wierd-memory.open-<note id>" opens that note's card; "wierd-memory.review"
     // goes to what dreams propose.
     cx.spawn(async (cx) => {
       for (;;) {
@@ -174,7 +174,7 @@ export default class WierdMem extends View {
   // when memory changed. A server that is away is asked again, less and less often.
   async live(cx) {
     try {
-      const url = JSON.parse((await readTextFile(`${appHome()}/mods/wierd-mem/server.json`)) ?? "{}").url;
+      const url = JSON.parse((await readTextFile(`${appHome()}/mods/wierd-memory/server.json`)) ?? "{}").url;
       if (typeof url === "string" && /^https?:\/\/[^/]/.test(url)) this.server = url.replace(/\/+$/, "");
     } catch {
       // No file, or not JSON: the default address.
@@ -709,7 +709,7 @@ export default class WierdMem extends View {
     if (!card || card.kind === "gone" || (card.kind !== "note" && card.kind !== "review")) this.form = null;
     const zoom = settings().zoom || 1;
     return v_flex()
-      .id("wierd-mem")
+      .id("wierd-memory")
       .size_full()
       .min_h(0)
       .rounded(10)
@@ -811,7 +811,7 @@ export default class WierdMem extends View {
     if (this.down) {
       this.flat = [];
       return body
-        .child(hint(t, "wierd-mem server is not running (wmem serve)"))
+        .child(hint(t, "wierd-memory server is not running (wmem serve)"))
         .child(div().pl(10).pr(10).text_size(11).text_color(t.dim).font_family(mono()).child(this.server));
     }
     const d = this.data;
@@ -1100,7 +1100,7 @@ export default class WierdMem extends View {
   footer(t) {
     const d = this.data, s = this.status;
     const bar = h_flex().h(30).flex_none().pl(12).pr(8).gap(12).items_center().border_t(1).border_color(t.border).text_size(11.5).text_color(t.dim);
-    const web = iconButton(t, "f-web", "external", `Open wierd-mem in the browser (${this.server})`, (_e, cx) => cx.open_url(`${this.server}/`), 22);
+    const web = iconButton(t, "f-web", "external", `Open wierd-memory in the browser (${this.server})`, (_e, cx) => cx.open_url(`${this.server}/`), 22);
     if (this.down) return bar.child(div().child("Looking for the server…")).child(div().flex_1());
     if (!d || !s) return bar.child(div().child(this.loading || this.down === null ? "Reading memory…" : "")).child(div().flex_1()).child(web);
     const dream = s.dream ?? {};

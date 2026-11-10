@@ -3,7 +3,7 @@
  * (memory version, dream state, server), and the screen the hash names.
  */
 
-import type { StatusInfo } from "@wierd-mem/core";
+import type { StatusInfo } from "@wierd-memory/core";
 import { type ReactNode, useEffect } from "react";
 import { go, href, type Route, useLive, useNow, useRoute } from "./hooks.ts";
 import { DreamsScreen } from "./screens/Dreams.tsx";
@@ -59,7 +59,7 @@ export function App() {
 
 	const pending = status?.review?.pending ?? 0;
 	useEffect(() => {
-		document.title = pending ? `(${pending}) wierd-mem` : "wierd-mem";
+		document.title = pending ? `(${pending}) wierd-memory` : "wierd-memory";
 	}, [pending]);
 
 	const section = route.name === "note" ? "memory" : route.name;
@@ -93,7 +93,7 @@ export function App() {
 			<div className="content">
 				{!online ? (
 					<div className="offline" role="alert">
-						<Icon name="warn" /> The wierd-mem server is unreachable. Retrying… what you see may be out of date, and actions will fail.
+						<Icon name="warn" /> The wierd-memory server is unreachable. Retrying… what you see may be out of date, and actions will fail.
 					</div>
 				) : null}
 				<main className={cls("main", `main-${section}`)}>{known ? screen(route) : null}</main>
@@ -139,7 +139,7 @@ function StatusLine({ status, online }: { status: StatusInfo | null; online: boo
 				)}
 				{!running && status.dream.due.due ? <span className="text-yellow"> · due</span> : null}
 			</a>
-			<div className={cls("status-row", !online && "text-red")} title={`${status.url} · wierd-mem ${status.version}`}>
+			<div className={cls("status-row", !online && "text-red")} title={`${status.url} · wierd-memory ${status.version}`}>
 				<span className={cls("dot", online ? "dot-green" : "dot-red")} /> {online ? "server ok" : "server unreachable"}
 			</div>
 		</div>

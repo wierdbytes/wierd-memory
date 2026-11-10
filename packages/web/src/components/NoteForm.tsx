@@ -4,7 +4,7 @@
  * data around it never touches what the user is typing.
  */
 
-import type { IndexMode, Note, NoteEdit, NoteType } from "@wierd-mem/core";
+import type { IndexMode, Note, NoteEdit, NoteType } from "@wierd-memory/core";
 import { useEffect, useRef, useState } from "react";
 import { AutoTextarea, Button, Field } from "../ui.tsx";
 import { cls, INDEX_LABEL, INDEX_MODES, NOTE_TYPES, REACH } from "../util.ts";

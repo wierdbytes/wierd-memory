@@ -3,7 +3,7 @@
  * · search only, ! over budget, ⊘ off, — archived.
  */
 
-import type { Reach } from "@wierd-mem/core";
+import type { Reach } from "@wierd-memory/core";
 import { cls, REACH } from "../util.ts";
 
 export function ReachMark({ reach }: { reach: Reach }) {

@@ -10,7 +10,7 @@
 
 import type { Api, AssistantMessage, Message, Model } from "@earendil-works/pi-ai";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import type { Stage, StageModel, StageUsage } from "@wierd-mem/core";
+import type { Stage, StageModel, StageUsage } from "@wierd-memory/core";
 
 export interface CallOptions {
 	maxTokens: number;

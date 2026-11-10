@@ -7,8 +7,8 @@
  * browser names an origin, that origin must be this server.
  */
 
-import type { DreamSubmit, EvidenceRef, InboxInput, NoteCreate, NoteEdit, NotePatch, RunInfo } from "@wierd-mem/core";
-import { GLOBAL_SCOPE, INBOX_KINDS, oneOf, projectScope, renderReport, resolveProject, defaultPrompt, PROMPT_NAMES, DEFAULT_GLOBAL_CHARTER, DEFAULT_PROJECT_CHARTER } from "@wierd-mem/core";
+import type { DreamSubmit, EvidenceRef, InboxInput, NoteCreate, NoteEdit, NotePatch, RunInfo } from "@wierd-memory/core";
+import { GLOBAL_SCOPE, INBOX_KINDS, oneOf, projectScope, renderReport, resolveProject, defaultPrompt, PROMPT_NAMES, DEFAULT_GLOBAL_CHARTER, DEFAULT_PROJECT_CHARTER } from "@wierd-memory/core";
 import { type App, bad, HttpError, notFound, scopeShortName } from "./app.ts";
 import { MAIN } from "./git.ts";
 import { importPiDreamState } from "./importer.ts";

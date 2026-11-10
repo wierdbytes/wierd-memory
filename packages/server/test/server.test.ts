@@ -21,7 +21,7 @@ import {
 	type StatusInfo,
 	today,
 	Workspace,
-} from "@wierd-mem/core";
+} from "@wierd-memory/core";
 import { App } from "../src/app.ts";
 import { handleApi } from "../src/http.ts";
 import { parseNote } from "../src/notefile.ts";
@@ -470,7 +470,7 @@ describe("memory is a git repository", () => {
 		expect(sh(memDir, "branch", "--list", "review/*").replace(/^[+* ]+/, "")).toBe(v.branch);
 		const proposed = () => sh(memDir, "diff", "--name-status", `v2...${v.branch}`).split("\n").sort();
 		expect(proposed()).toEqual(["A\tscopes/global/notes/predlozhenie-dlya-proverki-vetki.md", "A\tscopes/projects/github.com__new__proj/notes/pervaya-zametka-novogo-proekta.md", "A\tscopes/projects/github.com__new__proj/scope.json"]);
-		expect(sh(memDir, "log", "-1", "--format=%an|%s", v.branch)).toMatch(/^wierd-mem dream\|dream .*: \+2$/);
+		expect(sh(memDir, "log", "-1", "--format=%an|%s", v.branch)).toMatch(/^wierd-memory dream\|dream .*: \+2$/);
 		// nothing of it is in the approved folder, and the project is not a scope yet
 		expect(existsSync(join(memDir, "scopes/projects/github.com__new__proj"))).toBe(false);
 		expect(v.items.find((i) => i.scope === "projects/github.com__new__proj")?.scopeName).toBe("proj");
@@ -532,7 +532,7 @@ describe("a remote", () => {
 		sh(seed, "add", "-A");
 		sh(seed, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "pi-dream: notes");
 		sh(seed, "push", "-q", "origin", "HEAD:main");
-		// wierd-mem works on the same repository, on its own branch
+		// wierd-memory works on the same repository, on its own branch
 		mem = join(dir, "home", "memory");
 		mkdirSync(join(dir, "home"), { recursive: true });
 		sh(dir, "clone", "-q", bare, mem);

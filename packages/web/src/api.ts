@@ -1,5 +1,5 @@
 /**
- * The client of the wierd-mem HTTP API (`docs/api.md`). Every call goes to the
+ * The client of the wierd-memory HTTP API (`docs/api.md`). Every call goes to the
  * server the page was loaded from and names itself with `x-wmem-client: web`.
  */
 
@@ -23,7 +23,7 @@ import type {
 	ScopeInfo,
 	StatusInfo,
 	WmemConfig,
-} from "@wierd-mem/core";
+} from "@wierd-memory/core";
 
 export class ApiError extends Error {
 	status: number;

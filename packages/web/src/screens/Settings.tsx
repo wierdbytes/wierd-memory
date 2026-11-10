@@ -3,7 +3,7 @@
  * data lives.
  */
 
-import type { Stage, ThinkingLevel, WmemConfig } from "@wierd-mem/core";
+import type { Stage, ThinkingLevel, WmemConfig } from "@wierd-memory/core";
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import { api } from "../api.ts";
 import { useBusy, useData, useStatus } from "../hooks.ts";
@@ -176,7 +176,7 @@ export function SettingsScreen() {
 				{status ? (
 					<dl className="kv">
 						<dt>Version</dt>
-						<dd>wierd-mem {status.version}</dd>
+						<dd>wierd-memory {status.version}</dd>
 						<dt>Home</dt>
 						<dd className="mono">{status.home}</dd>
 						<dt>URL</dt>
@@ -268,7 +268,7 @@ function Prompts() {
 	return (
 		<section className="section panel settings-group">
 			<h2>Prompts</h2>
-			<p className="dim">The built-in text each dream stage runs with. An override replaces it whole; “reset” goes back to the built-in text (which follows new versions of wierd-mem).</p>
+			<p className="dim">The built-in text each dream stage runs with. An override replaces it whole; “reset” goes back to the built-in text (which follows new versions of wierd-memory).</p>
 			{!p ? (
 				<LoadState error={prompts.error} loading={prompts.loading} reload={prompts.reload} />
 			) : (

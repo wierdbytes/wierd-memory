@@ -3,7 +3,7 @@
  * changed, field by field.
  */
 
-import type { CommitInfo } from "@wierd-mem/core";
+import type { CommitInfo } from "@wierd-memory/core";
 import { useState } from "react";
 import { api, type CommitChange } from "../api.ts";
 import { Changes, notePairs } from "../components/DiffText.tsx";

@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 /**
- * `wmem` — the command line of wierd-mem, for people and for agents.
+ * `wmem` — the command line of wierd-memory, for people and for agents.
  *
  * `wmem serve` is the server. Every other command is a client of its HTTP API
  * (`WMEM_URL`, default http://127.0.0.1:7433): `--json` prints the raw answer.
@@ -28,12 +28,12 @@ import {
 	loadConfig,
 	saveConfig,
 	serverUrl,
-} from "@wierd-mem/core";
+} from "@wierd-memory/core";
 import { git } from "./git.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO = resolve(HERE, "..", "..", "..");
-const LABEL = "dev.wierd-mem.server";
+const LABEL = "dev.wierd-memory.server";
 
 // ── arguments ────────────────────────────────────────────────────────────
 
@@ -89,7 +89,7 @@ async function api<T>(method: string, path: string, body?: unknown): Promise<T> 
 			body: body !== undefined ? JSON.stringify(body) : undefined,
 		});
 	} catch {
-		throw new ApiFailure(0, `the wierd-mem server is not running at ${base()} — start it with \`wmem serve\`, or keep it running with \`wmem service install\``);
+		throw new ApiFailure(0, `the wierd-memory server is not running at ${base()} — start it with \`wmem serve\`, or keep it running with \`wmem service install\``);
 	}
 	const type = res.headers.get("content-type") ?? "";
 	if (!type.includes("json")) {
@@ -236,14 +236,14 @@ dreams
 
 setup
   wmem init --repo git@github.com:you/pi-memory.git --branch v2
-                                      clone the repository into ~/.wierd-mem/memory and make <branch> the approved one
+                                      clone the repository into ~/.wierd-memory/memory and make <branch> the approved one
                                       (created from --from, default the remote's main branch, when it does not exist)
   wmem sync                           exchange with the remote now: pull what it has, push
   wmem import [--from ~/.pi/memory]   take over pi-dream's local state: sessions read, inbox, digests, settings
   wmem config [<key> [<value>]]       settings (e.g. schedule.enabled true)
   wmem herdr install                  install the Herdr mod
 
-Notes are files: ~/.wierd-mem/memory/scopes/<scope>/notes/*.md. Edit one in an editor and the server commits it;
+Notes are files: ~/.wierd-memory/memory/scopes/<scope>/notes/*.md. Edit one in an editor and the server commits it;
 git log, git diff <approved>...review/<id> and GitHub show the rest.
 
 --json prints the server's answer as is.`;
@@ -290,7 +290,7 @@ async function main(): Promise<void> {
 		case "status": {
 			const s = await get<StatusInfo>("/api/status");
 			return show(s, () => {
-				out(`${bold("wierd-mem")} ${s.version}  ${s.url}`);
+				out(`${bold("wierd-memory")} ${s.version}  ${s.url}`);
 				out(`memory    ${s.notes.active} notes in ${s.notes.scopes} scopes${s.notes.off ? `, ${s.notes.off} off` : ""}${s.notes.archived ? `, ${s.notes.archived} archived` : ""} ${dim(`· at ${s.memver}`)}`);
 				out(`inbox     ${s.inbox} waiting for the next dream`);
 				out(`review    ${s.review ? `${s.review.pending} to decide — ${s.review.title} ${dim(`(${s.url}/#/review)`)}` : "nothing to review"}`);
@@ -706,7 +706,7 @@ ${Object.entries(env).map(([k, v]) => `\t\t<key>${k}</key><string>${esc(v)}</str
 function herdrInstall(): void {
 	const home = process.env.HERDR_APP_HOME || join(homedir(), ".config", "herdr-app");
 	const src = join(REPO, "packages", "herdr-mod");
-	const dst = join(home, "mods", "wierd-mem");
+	const dst = join(home, "mods", "wierd-memory");
 	if (!existsSync(join(src, "main.js"))) throw new ApiFailure(500, `the mod is missing in ${src}`);
 	if (!existsSync(home)) throw new ApiFailure(404, `no Herdr app home at ${home}`);
 	mkdirSync(dst, { recursive: true });

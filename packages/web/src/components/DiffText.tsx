@@ -3,7 +3,7 @@
  * changed words marked) for bodies, and "what changed" for whole notes.
  */
 
-import type { Evidence, IndexMode, Note } from "@wierd-mem/core";
+import type { Evidence, IndexMode, Note } from "@wierd-memory/core";
 import { type Change, diffLines, diffWordsWithSpace } from "diff";
 import { memo, type ReactNode, useMemo } from "react";
 import { cls, INDEX_LABEL, plural } from "../util.ts";

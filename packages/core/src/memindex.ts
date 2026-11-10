@@ -97,7 +97,7 @@ export interface InjectionInput {
 }
 
 export const PREAMBLE =
-	"Notes distilled from this user's past pi sessions by wierd-mem. They can be outdated: the user's words and the current state of the code take precedence. Open a note with memory_read <id>; search notes and past sessions with memory_search; use memory_inbox to keep something for the next memory review.";
+	"Notes distilled from this user's past pi sessions by wierd-memory. They can be outdated: the user's words and the current state of the code take precedence. Open a note with memory_read <id>; search notes and past sessions with memory_search; use memory_inbox to keep something for the next memory review.";
 
 function capLines(text: string, maxTokens: number): string {
 	if (estimateTokens(text) <= maxTokens) return text;

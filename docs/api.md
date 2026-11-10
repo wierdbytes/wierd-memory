@@ -1,6 +1,6 @@
-# wierd-mem HTTP API
+# wierd-memory HTTP API
 
-The server listens on `http://127.0.0.1:7433` (`port` in `~/.wierd-mem/config.json`, `WMEM_PORT`).
+The server listens on `http://127.0.0.1:7433` (`port` in `~/.wierd-memory/config.json`, `WMEM_PORT`).
 Everything is JSON under `/api`. Types are in [`packages/core/src/api.ts`](../packages/core/src/api.ts)
 (`Note` is in `notes.ts`, `ReportData` in `report.ts`) — they are the contract; this page says what each route does.
 

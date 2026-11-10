@@ -1,8 +1,8 @@
 /**
- * @wierdbytes/pi-wierd-mem — pi's side of wierd-mem.
+ * @wierdbytes/pi-memory — pi's side of wierd-memory.
  *
  * Wiring only: what a session sees lives in `runtime.ts` (it asks the
- * wierd-mem server), the dream in `pipeline.ts` (run by `runner.ts` in a
+ * wierd-memory server), the dream in `pipeline.ts` (run by `runner.ts` in a
  * headless pi process the server starts).
  */
 
@@ -11,11 +11,11 @@ import { registerCommands } from "./commands.ts";
 import { Runtime } from "./runtime.ts";
 import { registerTools } from "./tools.ts";
 
-export default function piWierdMem(pi: ExtensionAPI) {
+export default function piWierdMemory(pi: ExtensionAPI) {
 	if (process.env.WMEM_CHILD === "1" || process.env.PI_DREAM_CHILD === "1") return;
 
 	pi.registerFlag("no-memory", {
-		description: "wierd-mem: no memory injection and no memory tools in this run",
+		description: "wierd-memory: no memory injection and no memory tools in this run",
 		type: "boolean",
 		default: false,
 	});

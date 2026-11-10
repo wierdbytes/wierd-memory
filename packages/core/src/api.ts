@@ -1,5 +1,5 @@
 /**
- * The HTTP API of the wierd-mem server, as types: what the web UI, the pi
+ * The HTTP API of the wierd-memory server, as types: what the web UI, the pi
  * extension, the Herdr mod and the CLI send and get back. Every route is
  * under `/api`; bodies are JSON. `docs/api.md` describes each route.
  */

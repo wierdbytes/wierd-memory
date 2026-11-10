@@ -127,7 +127,7 @@ export class Repo {
 		if (!existsSync(join(this.dir, ".git"))) {
 			await this.ok(MAIN, ["init", "-q", "-b", this.branch]);
 			writeFileSync(join(this.dir, ".gitignore"), ".local/\n.DS_Store\n");
-			await this.commit(MAIN, "wierd-mem: initialize memory repository", this.committer());
+			await this.commit(MAIN, "wierd-memory: initialize memory repository", this.committer());
 			this.log(`git: initialized ${this.dir} (branch ${this.branch})`);
 		}
 		const current = (await this.run(MAIN, ["symbolic-ref", "--short", "-q", "HEAD"])).stdout.toString().trim();
@@ -144,7 +144,7 @@ export class Repo {
 		const ignore = existsSync(join(this.dir, ".gitignore")) ? readFileSync(join(this.dir, ".gitignore"), "utf-8") : "";
 		if (!/^\.local\/?$/m.test(ignore)) {
 			writeFileSync(join(this.dir, ".gitignore"), `${ignore}${ignore && !ignore.endsWith("\n") ? "\n" : ""}.local/\n`);
-			await this.commit(MAIN, "wierd-mem: keep .local out of git", this.committer());
+			await this.commit(MAIN, "wierd-memory: keep .local out of git", this.committer());
 		}
 		mkdirSync(join(this.dir, ".local"), { recursive: true });
 		await this.run(MAIN, ["worktree", "prune"]);

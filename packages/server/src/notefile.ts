@@ -9,7 +9,7 @@
  * rewritten when the note in it really changed.
  */
 
-import { INDEX_MODES, isNoteId, makeNote, type Note, NOTE_STATUSES, NOTE_TYPES, type NoteStats, oneOf, parseEvidence, serializeNote, slugify, type SkillDraft } from "@wierd-mem/core";
+import { INDEX_MODES, isNoteId, makeNote, type Note, NOTE_STATUSES, NOTE_TYPES, type NoteStats, oneOf, parseEvidence, serializeNote, slugify, type SkillDraft } from "@wierd-memory/core";
 import { parse as parseYaml } from "yaml";
 
 const KNOWN = new Set(["id", "title", "type", "status", "index", "when", "pinned", "enabled", "created", "updated", "confirmed", "valid_until", "superseded_by", "supersedes", "stats", "evidence"]);
@@ -35,7 +35,7 @@ function dateStr(v: unknown): string | undefined {
 export interface ParsedNote {
 	/** `id` is empty when the file has none (or an invalid one). */
 	note: Note;
-	/** Usefulness votes pi-dream kept in the file (wierd-mem keeps them in the state). */
+	/** Usefulness votes pi-dream kept in the file (wierd-memory keeps them in the state). */
 	stats?: NoteStats;
 	/** What the file lacks and a rewrite would add: an id, dates. */
 	incomplete: boolean;

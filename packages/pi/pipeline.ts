@@ -1,6 +1,6 @@
 /**
  * One dream, end to end. Runs inside a headless pi process (`runner.ts`),
- * started by the wierd-mem server.
+ * started by the wierd-memory server.
  *
  * 1. ask the server what to work on: settings, which sessions were read, the
  *    inbox, the notes (approved + what the open review already proposes), the
@@ -82,7 +82,7 @@ import {
 	today,
 	type WmemConfig,
 	Workspace,
-} from "@wierd-mem/core";
+} from "@wierd-memory/core";
 
 const MINUTE = 60_000;
 

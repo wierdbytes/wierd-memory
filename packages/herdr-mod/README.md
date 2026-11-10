@@ -1,6 +1,6 @@
-# wierd-mem: the Herdr panel
+# wierd-memory: the Herdr panel
 
-A panel for the [Herdr app](https://herdr.dev) that shows what wierd-mem remembers for pi,
+A panel for the [Herdr app](https://herdr.dev) that shows what wierd-memory remembers for pi,
 and lets you decide on what dreams propose without leaving the window.
 
 ## What it shows
@@ -34,14 +34,14 @@ In the edit form: `⌘Enter` saves, `Esc` cancels.
 
 ## Commands
 
-Bind them in `keys.json` as `wierd-mem.<command>` (they reach a shown copy):
+Bind them in `keys.json` as `wierd-memory.<command>` (they reach a shown copy):
 
 | Command | What it does |
 |---|---|
-| `wierd-mem.search` | the keyboard goes to the search field |
-| `wierd-mem.review` | the list with the Review group open, the cursor on its first proposal |
-| `wierd-mem.open-<note id>` | opens that note's card (`wierd-mem.open-m-1a2b3c`) |
-| `wierd-mem.focus` | the keyboard goes to the panel (what `pane.go` sends with `"focusable": true` in `mod.json`) |
+| `wierd-memory.search` | the keyboard goes to the search field |
+| `wierd-memory.review` | the list with the Review group open, the cursor on its first proposal |
+| `wierd-memory.open-<note id>` | opens that note's card (`wierd-memory.open-m-1a2b3c`) |
+| `wierd-memory.focus` | the keyboard goes to the panel (what `pane.go` sends with `"focusable": true` in `mod.json`) |
 
 ## Install
 
@@ -49,17 +49,17 @@ Bind them in `keys.json` as `wierd-mem.<command>` (they reach a shown copy):
 wmem herdr install
 ```
 
-copies this folder to `~/.config/herdr-app/mods/wierd-mem/`, writes the server's address to
+copies this folder to `~/.config/herdr-app/mods/wierd-memory/`, writes the server's address to
 `server.json` there (the mod reads it at start; without it: `http://127.0.0.1:7433`) and runs `herdr-app check`.
-Run it again after changing the port or updating wierd-mem.
+Run it again after changing the port or updating wierd-memory.
 
 Then put the panel into a layout (`~/.config/herdr-app/layouts/<name>.json`), e.g. beside Files in a stack:
 
 ```json
-{ "id": "wierd-mem", "type": "block", "content": { "mod": "wierd-mem" } }
+{ "id": "wierd-memory", "type": "block", "content": { "mod": "wierd-memory" } }
 ```
 
-or look at it without touching a layout: `herdr-app do mod.open --name wierd-mem` (again: closes it).
+or look at it without touching a layout: `herdr-app do mod.open --name wierd-memory` (again: closes it).
 
 ## Files
 

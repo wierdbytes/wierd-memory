@@ -136,8 +136,8 @@ function msgModel(m: Record<string, unknown>): string | undefined {
 	return typeof m.provider === "string" && typeof m.model === "string" ? `${m.provider}/${m.model}` : undefined;
 }
 
-/** Custom entry type of our own records in a session (`pi-dream`: sessions from before wierd-mem). */
-export const SESSION_EVENT = "wierd-mem";
+/** Custom entry type of our own records in a session (`pi-dream`: sessions from before wierd-memory). */
+export const SESSION_EVENT = "wierd-memory";
 const INJECT_EVENTS = new Set([SESSION_EVENT, "pi-dream"]);
 
 /** Note ids an entry shows as injected (our own custom entries). */

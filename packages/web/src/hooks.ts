@@ -3,7 +3,7 @@
  * the server changes, busy / error handling for actions, hash routing, hotkeys.
  */
 
-import type { StatusInfo } from "@wierd-mem/core";
+import type { StatusInfo } from "@wierd-memory/core";
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { api, ApiError, network } from "./api.ts";
 import { toast } from "./ui.tsx";

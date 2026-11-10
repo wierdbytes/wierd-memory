@@ -1,5 +1,5 @@
 /**
- * In-session side of wierd-mem: what a normal pi session sees.
+ * In-session side of wierd-memory: what a normal pi session sees.
  *
  * - The approved memory for the session's project is asked of the server once
  *   and frozen: the `<memory>` section stays byte-identical turn after turn,
@@ -14,7 +14,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { type ContextInfo, type DreamStatus, homePaths, type InboxItem, type InboxKind, type RunInfo, type SearchResult, SESSION_EVENT, type StatusInfo } from "@wierd-mem/core";
+import { type ContextInfo, type DreamStatus, homePaths, type InboxItem, type InboxKind, type RunInfo, type SearchResult, SESSION_EVENT, type StatusInfo } from "@wierd-memory/core";
 import { ApiError, Client, ServerDown } from "./client.ts";
 
 export const EVENT = SESSION_EVENT;
@@ -193,20 +193,20 @@ export class Runtime {
 		} catch {
 			// best effort
 		}
-		if (last.status === "error") ctx.ui.notify(`wierd-mem: the last dream failed — ${last.error ?? ""} (/dream log)`, "warning");
-		else if (s.review?.pending) ctx.ui.notify(`wierd-mem: ${s.review.pending} memory change(s) wait for your review — ${s.url}/#/review`, "info");
+		if (last.status === "error") ctx.ui.notify(`wierd-memory: the last dream failed — ${last.error ?? ""} (/dream log)`, "warning");
+		else if (s.review?.pending) ctx.ui.notify(`wierd-memory: ${s.review.pending} memory change(s) wait for your review — ${s.url}/#/review`, "info");
 	}
 
 	async status(ctx: ExtensionContext): Promise<string> {
 		const snap = this.snapshot;
 		const session = `session:  ${snap ? (snap.text ? `${snap.ids.length} notes, ~${snap.tokens} tokens, memory ${snap.memver ?? "?"}` : "nothing to inject") : "nothing injected yet (the first turn asks the server)"}`;
-		if (!this.active()) return `wierd-mem is off for this run (--no-memory / WMEM_DISABLE)\ncwd:      ${ctx.cwd}`;
+		if (!this.active()) return `wierd-memory is off for this run (--no-memory / WMEM_DISABLE)\ncwd:      ${ctx.cwd}`;
 		try {
 			await this.client.ensure();
 			const s = await this.client.get<StatusInfo>("/api/status", 5000);
 			const d = s.dream;
 			return [
-				`server:   ${s.url} (wierd-mem ${s.version}; memory in ${s.git.dir}, branch ${s.git.branch})`,
+				`server:   ${s.url} (wierd-memory ${s.version}; memory in ${s.git.dir}, branch ${s.git.branch})`,
 				`memory:   ${s.notes.active} notes in ${s.notes.scopes} scopes${s.notes.off ? `, ${s.notes.off} off` : ""} · at ${s.memver}`,
 				session,
 				`project:  ${snap?.projectKey ?? "(resolving)"}`,

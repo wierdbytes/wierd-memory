@@ -3,7 +3,7 @@
  * dream to turn them into notes.
  */
 
-import type { InboxItem, InboxKind } from "@wierd-mem/core";
+import type { InboxItem, InboxKind } from "@wierd-memory/core";
 import { useState } from "react";
 import { api } from "../api.ts";
 import { useBusy, useData } from "../hooks.ts";

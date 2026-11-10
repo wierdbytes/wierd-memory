@@ -3,7 +3,7 @@
  * search box of the web UI, and the "where it came from" part of a note.
  *
  * Notes are searched in the database (BM25, Russian + English); past sessions
- * in their digests (`~/.wierd-mem/digests`, rebuilt by dreams). Agents never
+ * in their digests (`~/.wierd-memory/digests`, rebuilt by dreams). Agents never
  * get notes the user turned off.
  */
 
@@ -28,7 +28,7 @@ import {
 	sessionsRoot,
 	shortKey,
 	snippet,
-} from "@wierd-mem/core";
+} from "@wierd-memory/core";
 import type { App } from "./app.ts";
 import { MAIN } from "./git.ts";
 

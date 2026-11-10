@@ -1,10 +1,10 @@
 {
-  "name": "@wierd-mem/web",
+  "name": "@wierd-memory/web",
   "version": "0.1.0",
   "private": true,
   "type": "module",
   "dependencies": {
-    "@wierd-mem/core": "workspace:*",
+    "@wierd-memory/core": "workspace:*",
     "diff": "^7.0.0",
     "marked": "^15.0.0",
     "react": "^19.0.0",

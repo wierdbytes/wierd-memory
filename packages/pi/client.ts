@@ -1,5 +1,5 @@
 /**
- * The wierd-mem server, as this extension talks to it.
+ * The wierd-memory server, as this extension talks to it.
  *
  * pi sessions must never hang on memory: every call has a short timeout and a
  * failure is a value (`undefined`, or a thrown `ServerDown` the caller turns
@@ -12,11 +12,11 @@ import { spawn } from "node:child_process";
 import { closeSync, existsSync, mkdirSync, openSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { homePaths, loadConfig, serverUrl } from "@wierd-mem/core";
+import { homePaths, loadConfig, serverUrl } from "@wierd-memory/core";
 
 export class ServerDown extends Error {
 	constructor(readonly url: string) {
-		super(`the wierd-mem server is not running at ${url} (start it: wmem serve)`);
+		super(`the wierd-memory server is not running at ${url} (start it: wmem serve)`);
 	}
 }
 
@@ -49,7 +49,7 @@ export class Client {
 				signal: AbortSignal.timeout(timeoutMs),
 			});
 		} catch (err) {
-			if (err instanceof Error && err.name === "TimeoutError") throw new ApiError(504, `wierd-mem did not answer ${path} in ${Math.round(timeoutMs / 1000)}s`);
+			if (err instanceof Error && err.name === "TimeoutError") throw new ApiError(504, `wierd-memory did not answer ${path} in ${Math.round(timeoutMs / 1000)}s`);
 			throw new ServerDown(this.base);
 		}
 		const type = res.headers.get("content-type") ?? "";

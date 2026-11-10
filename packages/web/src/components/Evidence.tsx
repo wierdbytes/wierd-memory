@@ -3,7 +3,7 @@
  * hand edits) behind it, with the cited lines loaded from `POST /api/evidence`.
  */
 
-import type { Evidence, EvidenceInfo } from "@wierd-mem/core";
+import type { Evidence, EvidenceInfo } from "@wierd-memory/core";
 import { useEffect, useState } from "react";
 import { api } from "../api.ts";
 import { CopyButton, Icon, Spinner } from "../ui.tsx";

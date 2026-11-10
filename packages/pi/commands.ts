@@ -35,7 +35,7 @@ function say(ctx: ExtensionContext, text: string, level: "info" | "warning" = "i
 
 export function registerCommands(pi: ExtensionAPI, rt: Runtime): void {
 	pi.registerCommand("dream", {
-		description: "wierd-mem: status, run, review, dry, index, log, open",
+		description: "wierd-memory: status, run, review, dry, index, log, open",
 		getArgumentCompletions: completions(DREAM_SUB),
 		handler: async (args, ctx) => {
 			const [cmd = "status", ...rest] = (args ?? "").trim().split(/\s+/).filter(Boolean);
@@ -45,7 +45,7 @@ export function registerCommands(pi: ExtensionAPI, rt: Runtime): void {
 				case "log":
 					return say(ctx, await rt.dreamLog().catch(why), "info");
 				case "open":
-					return say(ctx, `wierd-mem: ${rt.client.base}/#/review`, "info");
+					return say(ctx, `wierd-memory: ${rt.client.base}/#/review`, "info");
 				case "run":
 				case "review":
 				case "dry":
@@ -57,9 +57,9 @@ export function registerCommands(pi: ExtensionAPI, rt: Runtime): void {
 					}
 					try {
 						const run = await rt.startDream(cmd === "index" ? "reindex" : cmd, opts);
-						return say(ctx, `wierd-mem: ${cmd} started (${run.id})\nlog: ${run.log}\nwhat it proposes will wait at ${rt.client.base}/#/review`, "info");
+						return say(ctx, `wierd-memory: ${cmd} started (${run.id})\nlog: ${run.log}\nwhat it proposes will wait at ${rt.client.base}/#/review`, "info");
 					} catch (err) {
-						return say(ctx, `wierd-mem: ${why(err)}`, "warning");
+						return say(ctx, `wierd-memory: ${why(err)}`, "warning");
 					}
 				}
 				default:
@@ -69,7 +69,7 @@ export function registerCommands(pi: ExtensionAPI, rt: Runtime): void {
 	});
 
 	pi.registerCommand("memory", {
-		description: "wierd-mem: what this session got from memory",
+		description: "wierd-memory: what this session got from memory",
 		getArgumentCompletions: completions(MEMORY_SUB),
 		handler: async (_args, ctx) => {
 			const section = await rt.memorySection(ctx);
@@ -84,9 +84,9 @@ export function registerCommands(pi: ExtensionAPI, rt: Runtime): void {
 			if (!text) return say(ctx, "Usage: /remember <what future sessions should know>", "info");
 			try {
 				const id = await rt.inbox(ctx, text, "user");
-				say(ctx, `wierd-mem: saved to the inbox (${id}) — the next dream will propose it for review`, "info");
+				say(ctx, `wierd-memory: saved to the inbox (${id}) — the next dream will propose it for review`, "info");
 			} catch (err) {
-				say(ctx, `wierd-mem: not saved — ${why(err)}`, "warning");
+				say(ctx, `wierd-memory: not saved — ${why(err)}`, "warning");
 			}
 		},
 	});

@@ -4,7 +4,7 @@
  * from and its history.
  */
 
-import type { NoteHistoryEntry, NotePatch, NoteView, ScopeInfo } from "@wierd-mem/core";
+import type { NoteHistoryEntry, NotePatch, NoteView, ScopeInfo } from "@wierd-memory/core";
 import { useEffect, useState } from "react";
 import { api } from "../api.ts";
 import { type ChangePairs, Changes } from "../components/DiffText.tsx";

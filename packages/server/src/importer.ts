@@ -3,7 +3,7 @@
  * (`<repo>/.local`) — which sessions were read, the inbox, rejected titles,
  * session digests and cards — and its settings.
  *
- * The notes themselves need no import: wierd-mem works on the same repository
+ * The notes themselves need no import: wierd-memory works on the same repository
  * (a branch of it), in the same file format. To bring over notes pi-dream
  * approved later, merge its branch with git.
  *
@@ -13,7 +13,7 @@
 
 import { cpSync, existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
-import { expandHome, type InboxItem, piAgentDir, sanitize, saveConfig, type SessionMark } from "@wierd-mem/core";
+import { expandHome, type InboxItem, piAgentDir, sanitize, saveConfig, type SessionMark } from "@wierd-memory/core";
 import { type App, bad } from "./app.ts";
 
 export interface ImportOptions {
@@ -59,7 +59,7 @@ export function importPiDreamState(app: App, opts: ImportOptions = {}): Promise<
 		const from = expandHome(opts.from?.trim() || "~/.pi/memory");
 		const local = join(from, ".local");
 		if (!existsSync(local)) throw bad(`${from} has no .local folder: not a pi-dream memory repository`);
-		if (local === paths.local) throw bad(`${from} is the repository wierd-mem itself works in`);
+		if (local === paths.local) throw bad(`${from} is the repository wierd-memory itself works in`);
 		const warnings: string[] = [];
 		const res: ImportResult = { from, sessions: 0, inbox: 0, rejected: 0, digests: false, settings: false, warnings };
 
@@ -68,7 +68,7 @@ export function importPiDreamState(app: App, opts: ImportOptions = {}): Promise<
 			const cur = await state.get<number>("cutoffMs");
 			if (typeof old.cutoffMs === "number") await state.set("cutoffMs", cur === undefined ? old.cutoffMs : Math.min(cur, old.cutoffMs));
 			if (old.sessions) {
-				// What wierd-mem itself has read since stays: its own mark is the newer one.
+				// What wierd-memory itself has read since stays: its own mark is the newer one.
 				const mine = await state.marks();
 				const fresh = Object.fromEntries(Object.entries(old.sessions).filter(([path, m]) => !mine[path] || (mine[path].size < m.size && m.ok)));
 				await state.setMarks(fresh);
@@ -80,7 +80,7 @@ export function importPiDreamState(app: App, opts: ImportOptions = {}): Promise<
 				await state.addRejection(r.title);
 				res.rejected++;
 			}
-			if (old.openPr) warnings.push(`pi-dream remembers a review PR (${old.openPr.url}): what an open PR proposes is not on its main branch — merge it there first, then merge that branch into wierd-mem's`);
+			if (old.openPr) warnings.push(`pi-dream remembers a review PR (${old.openPr.url}): what an open PR proposes is not on its main branch — merge it there first, then merge that branch into wierd-memory's`);
 		}
 		const done = new Set(old?.inboxDone ?? []);
 		const have = new Set((await state.inbox("all")).map((i) => i.id));

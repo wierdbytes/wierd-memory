@@ -5,7 +5,7 @@ import { div, svg } from "gpui-kit";
 import { h_flex, v_flex } from "gpui-base";
 import { settings } from "herdr";
 
-export const icon = (name) => `mods/wierd-mem/${name}.svg`;
+export const icon = (name) => `mods/wierd-memory/${name}.svg`;
 export const mono = () => settings().font_family ?? "JetBrains Mono";
 
 // How a note reaches pi, as its mark's tooltip says it.

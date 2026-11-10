@@ -3,7 +3,7 @@
  * forms), an AGENTS.md proposal, and the comments left for the dream.
  */
 
-import type { AgentsProposal, NoteEdit, ReviewComment, ReviewItem, ReviewView } from "@wierd-mem/core";
+import type { AgentsProposal, NoteEdit, ReviewComment, ReviewItem, ReviewView } from "@wierd-memory/core";
 import { useEffect, useRef, useState } from "react";
 import { Changes, LineDiff, notePairs, WordDiff } from "../components/DiffText.tsx";
 import { EvidenceChips } from "../components/Evidence.tsx";

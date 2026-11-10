@@ -5,16 +5,16 @@
 
 import { rmSync, writeFileSync } from "node:fs";
 import web from "../../web/index.html";
-import { homePaths, loadConfig } from "@wierd-mem/core";
+import { homePaths, loadConfig } from "@wierd-memory/core";
 import { App, VERSION } from "./app.ts";
 import { handleApi } from "./http.ts";
 
-/** Whether a wierd-mem server already answers on this port. */
+/** Whether a wierd-memory server already answers on this port. */
 async function alreadyUp(port: number): Promise<string | undefined> {
 	try {
 		const res = await fetch(`http://127.0.0.1:${port}/api/status`, { signal: AbortSignal.timeout(1500) });
 		const s = (await res.json()) as { version?: string; home?: string };
-		return s.version ? `wierd-mem ${s.version} (${s.home})` : "something else";
+		return s.version ? `wierd-memory ${s.version} (${s.home})` : "something else";
 	} catch {
 		return undefined;
 	}
@@ -40,7 +40,7 @@ export async function serve(): Promise<void> {
 		fetch: () => new Response("not found", { status: 404 }),
 	});
 	writeFileSync(app.paths.serverInfo, `${JSON.stringify({ pid: process.pid, port: server.port, url: app.url, version: VERSION, startedAt: new Date().toISOString() }, null, 2)}\n`);
-	app.log(`wierd-mem ${VERSION}: ${app.url} — memory in ${app.paths.memory} (branch ${app.repo.branch}${app.remote.url ? `, remote ${app.remote.url}` : ", no remote"})`);
+	app.log(`wierd-memory ${VERSION}: ${app.url} — memory in ${app.paths.memory} (branch ${app.repo.branch}${app.remote.url ? `, remote ${app.remote.url}` : ", no remote"})`);
 	let stopping = false;
 	const stop = async (signal: string) => {
 		if (stopping) return;

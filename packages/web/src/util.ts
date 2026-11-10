@@ -1,9 +1,9 @@
 /**
- * Small helpers and the constants the UI shares with `@wierd-mem/core`
+ * Small helpers and the constants the UI shares with `@wierd-memory/core`
  * (copied: the core package's runtime code must not reach the browser bundle).
  */
 
-import type { IndexMode, InboxKind, ItemKind, NoteType, Reach, ThinkingLevel, Stage } from "@wierd-mem/core";
+import type { IndexMode, InboxKind, ItemKind, NoteType, Reach, ThinkingLevel, Stage } from "@wierd-memory/core";
 
 export const NOTE_TYPES: readonly NoteType[] = ["preference", "procedure", "pitfall", "fact", "decision", "reference"];
 export const INDEX_MODES: readonly IndexMode[] = ["always", "pointer", "none"];

@@ -3,21 +3,21 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "wierd-mem",
+      "name": "wierd-memory",
       "devDependencies": {
         "@types/bun": "latest",
         "typescript": "^5.6.0",
       },
     },
     "packages/core": {
-      "name": "@wierd-mem/core",
+      "name": "@wierd-memory/core",
       "version": "0.1.0",
     },
     "packages/pi": {
-      "name": "@wierdbytes/pi-wierd-mem",
+      "name": "@wierdbytes/pi-memory",
       "version": "0.1.0",
       "dependencies": {
-        "@wierd-mem/core": "workspace:*",
+        "@wierd-memory/core": "workspace:*",
       },
       "devDependencies": {
         "@earendil-works/pi-ai": "^1.5.0",
@@ -30,21 +30,21 @@
       },
     },
     "packages/server": {
-      "name": "@wierd-mem/server",
+      "name": "@wierd-memory/server",
       "version": "0.1.0",
       "bin": {
         "wmem": "./src/cli.ts",
       },
       "dependencies": {
-        "@wierd-mem/core": "workspace:*",
+        "@wierd-memory/core": "workspace:*",
         "yaml": "^2.6.0",
       },
     },
     "packages/web": {
-      "name": "@wierd-mem/web",
+      "name": "@wierd-memory/web",
       "version": "0.1.0",
       "dependencies": {
-        "@wierd-mem/core": "workspace:*",
+        "@wierd-memory/core": "workspace:*",
         "diff": "^7.0.0",
         "marked": "^15.0.0",
         "react": "^19.0.0",
@@ -166,13 +166,13 @@
 
     "@types/retry": ["@types/retry@0.12.0", "", {}, "sha512-wWKOClTTiizcZhXnPY4wikVAwmdYHp8q6DmC+EJUzAMsycb7HB32Kh9RN4+0gExjmPmZSAQjgURXIGATPegAvA=="],
 
-    "@wierd-mem/core": ["@wierd-mem/core@workspace:packages/core"],
+    "@wierd-memory/core": ["@wierd-memory/core@workspace:packages/core"],
 
-    "@wierd-mem/server": ["@wierd-mem/server@workspace:packages/server"],
+    "@wierd-memory/server": ["@wierd-memory/server@workspace:packages/server"],
 
-    "@wierd-mem/web": ["@wierd-mem/web@workspace:packages/web"],
+    "@wierd-memory/web": ["@wierd-memory/web@workspace:packages/web"],
 
-    "@wierdbytes/pi-wierd-mem": ["@wierdbytes/pi-wierd-mem@workspace:packages/pi"],
+    "@wierdbytes/pi-memory": ["@wierdbytes/pi-memory@workspace:packages/pi"],
 
     "agent-base": ["agent-base@9.0.0", "", {}, "sha512-TQf59BsZnytt8GdJKLPfUZ54g/iaUL2OWDSFCCvMOhsHduDQxO8xC4PNeyIkVcA5KwL2phPSv0douC0fgWzmnA=="],
 

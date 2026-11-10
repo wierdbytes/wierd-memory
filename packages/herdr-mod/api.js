@@ -1,4 +1,4 @@
-// The wierd-mem server (docs/api.md in the wierd-mem repository): JSON over
+// The wierd-memory server (docs/api.md in the wierd-memory repository): JSON over
 // HTTP on this computer. Every request says who asks (`x-wmem-client: herdr`):
 // the server records it in commit messages and review decisions.
 
