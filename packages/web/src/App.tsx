@@ -29,7 +29,7 @@ const KNOWN = new Set([...SECTIONS.map((s) => s.name), "note"]);
 function screen(route: Route): ReactNode {
 	switch (route.name) {
 		case "review":
-			return <ReviewScreen arg={route.arg} />;
+			return <ReviewScreen />;
 		case "memory":
 		case "note":
 			return <MemoryScreen route={route} />;
@@ -51,13 +51,13 @@ export function App() {
 	const { status, online } = useLive();
 	const known = KNOWN.has(route.name);
 
-	// No (or an unknown) route: the review when one is open, else memory.
+	// No (or an unknown) route: the review when something waits there, else memory.
 	useEffect(() => {
 		if (known || !status) return;
-		go(status.review ? "review" : "memory", undefined, true);
+		go(status.review.pending ? "review" : "memory", undefined, true);
 	}, [known, status]);
 
-	const pending = status?.review?.pending ?? 0;
+	const pending = status?.review.pending ?? 0;
 	useEffect(() => {
 		document.title = pending ? `(${pending}) wierd-memory` : "wierd-memory";
 	}, [pending]);
@@ -75,7 +75,7 @@ export function App() {
 	return (
 		<div className="app">
 			<aside className="sidebar">
-				<a className="brand" href={href(status?.review ? "review" : "memory")}>
+				<a className="brand" href={href(status?.review.pending ? "review" : "memory")}>
 					wierd<span>·</span>mem
 				</a>
 				<nav>

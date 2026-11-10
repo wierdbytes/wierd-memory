@@ -7,10 +7,14 @@ and lets you decide on what dreams propose without leaving the window.
 
 Top to bottom:
 
-- **Review** (only while a review is open): every proposal of the dreams as a row:
+- **Review** (only while something waits for a decision): everything dreams propose, as rows. There are no
+  numbered reviews or rounds: all proposals wait together on one branch (`dreams`) until you decide them,
+  any of them, at any time. A row is one of
   `+` new note, `~` edit, `→` move, `⇄` replacement, `−` close, `✓` confirm, `§` skill, `¶` AGENTS.md edit.
   A row opens as a card: what changes (before → after), why, the fact check, warnings, the evidence it adds.
-  **Accept**, **Edit** (change the text, then accept), **Reject**. "Accept all" in the group's heading asks once more.
+  **Accept**, **Edit** (change the text, then accept), **Reject**. "Accept all" in the group's heading asks once more
+  and accepts the notes and skills the panel shows (not what a dream proposed since). Each decision carries the
+  versions shown: if a proposal changed or was decided meanwhile, the server refuses, the panel says so and reloads.
   An AGENTS.md proposal is **applied** to the project's working copy (nothing is committed) or rejected.
 - **Inbox**: what waits for the next dream (`memory_inbox`, `/remember`). A card can be dismissed.
 - **This project** (the focused pane's) and **Global**, then every other project, folded.
@@ -20,7 +24,8 @@ Top to bottom:
   ↗ opens the session in a peek panel) and actions: **Turn off / on**, **Edit** (applied at once),
   **Pin / Unpin**, open its file in `$EDITOR` (notes are Markdown files in a git repository: save,
   and the server commits the edit), copy its id, open it in the browser.
-- **Footer**: the dream's state, "Review N" (goes to the proposals), the inbox count, a link to the web UI.
+- **Footer**: the dream's state, "N to decide" (goes to the proposals; its tooltip has the counts by kind),
+  the inbox count, a link to the web UI.
 
 It follows the server live (`GET /api/wait`); when the server is away it says so
 and comes back by itself once `wmem serve` runs again.
@@ -29,7 +34,7 @@ and comes back by itself once `wmem serve` runs again.
 
 In the list: `↑` `↓` move, `Enter` opens, `/` searches, `Esc` clears the search.
 In a card: `Esc` or `Backspace` goes back. In a review card: `a` accept, `e` edit, `x` reject
-(the cursor lands on the next proposal, so `Enter` `a` `Enter` `a` … walks the review).
+(the cursor lands on the next proposal, so `Enter` `a` `Enter` `a` … walks the proposals).
 In the edit form: `⌘Enter` saves, `Esc` cancels.
 
 ## Commands

@@ -10,7 +10,7 @@
  * ```
  *
  * Reads and writes name the branch: `MAIN` is approved memory (the
- * repository's own folder), a review branch is its worktree. A write changes
+ * repository's own folder), the dreams branch is its worktree. A write changes
  * files only — `Repo.commit` makes it a commit. Nothing here decides what may
  * be written where: `reviews.ts` and `app.ts` do.
  *
@@ -299,6 +299,31 @@ export class MemoryStore {
 		this.invalidate(ref);
 	}
 
+	/**
+	 * Where a note is the same on both branches and at the same path, make its
+	 * file on `ref` byte for byte the one `from` has: a file written by hand
+	 * (or by an older version) is not shown as a difference only because the
+	 * other side rendered it anew. `ids` omitted: every such note.
+	 */
+	async copyFiles(ref: string, from: string, ids?: readonly string[]): Promise<void> {
+		const t = this.tree(ref);
+		const f = this.tree(from);
+		const mine = new Map(t.notes.map((n) => [n.id, n]));
+		const root = this.repo.wt(ref);
+		const src = this.repo.wt(from);
+		let touched = false;
+		for (const n of f.notes) {
+			if (ids && !ids.includes(n.id)) continue;
+			const path = f.paths.get(n.id);
+			if (!path || t.paths.get(n.id) !== path || !sameNote(mine.get(n.id), n)) continue;
+			const text = readText(join(src, path));
+			if (text === undefined || readText(join(root, path)) === text) continue;
+			writeFileSync(join(root, path), text, "utf-8");
+			touched = true;
+		}
+		if (touched) this.invalidate(ref);
+	}
+
 	// ── scopes ───────────────────────────────────────────────────────────
 
 	async scopes(ref: string = MAIN): Promise<ScopeRow[]> {
@@ -377,7 +402,7 @@ export class MemoryStore {
 		this.invalidate(ref);
 	}
 
-	// ── keeping a review branch in step ──────────────────────────────────
+	// ── keeping the dreams branch in step ────────────────────────────────
 
 	/**
 	 * In the branch's worktree, make every file that is not a note or a skill

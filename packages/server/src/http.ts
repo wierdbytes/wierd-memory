@@ -7,7 +7,7 @@
  * browser names an origin, that origin must be this server.
  */
 
-import type { DreamSubmit, EvidenceRef, InboxInput, NoteCreate, NoteEdit, NotePatch, RunInfo } from "@wierd-memory/core";
+import type { DreamSubmit, EvidenceRef, InboxInput, NoteCreate, NotePatch, ReviewAccept, ReviewReject, RunInfo } from "@wierd-memory/core";
 import { GLOBAL_SCOPE, INBOX_KINDS, oneOf, projectScope, renderReport, resolveProject, defaultPrompt, PROMPT_NAMES, DEFAULT_GLOBAL_CHARTER, DEFAULT_PROJECT_CHARTER } from "@wierd-memory/core";
 import { type App, bad, HttpError, notFound, scopeShortName } from "./app.ts";
 import { MAIN } from "./git.ts";
@@ -115,8 +115,7 @@ route("PUT", "/api/scopes/:id/charter", async ({ app, params, body, actor }) => 
 });
 
 route("GET", "/api/notes", async ({ app, q }) => {
-	let ref = MAIN;
-	if (q.get("ref") === "review") ref = (await app.state.openReview())?.branch ?? MAIN;
+	const ref = q.get("ref") === "review" ? app.reviewBranch : MAIN;
 	let notes = await app.views(ref);
 	const scope = q.get("scope");
 	if (scope) notes = notes.filter((n) => n.scope === scope);
@@ -215,37 +214,43 @@ route("DELETE", "/api/inbox/:id", async ({ app, params }) => {
 // ── review ───────────────────────────────────────────────────────────────
 
 route("GET", "/api/review", ({ app }) => app.reviews.view());
-route("GET", "/api/reviews", ({ app, q }) => app.reviews.list(int(q.get("limit"), 50, 1, 500)));
-route("GET", "/api/reviews/:id", ({ app, params }) => app.reviews.view(params.id));
+route("GET", "/api/review/decisions", ({ app, q }) => app.reviews.decisions(int(q.get("limit"), 100, 1, 100_000)));
 
-route("POST", "/api/reviews/:id/accept", async ({ app, params, body, actor }) => {
-	const b = await body<{ keys?: string[]; edit?: NoteEdit }>();
-	return app.reviews.accept(params.id, Array.isArray(b.keys) ? b.keys : undefined, b.edit, actor);
+/** The part of a pick both decisions share; the reviews check what is missing. */
+function pickOf(b: Record<string, unknown>) {
+	return {
+		keys: Array.isArray(b.keys) ? b.keys.filter((k): k is string => typeof k === "string") : undefined,
+		all: b.all === true,
+		versions: b.versions && typeof b.versions === "object" && !Array.isArray(b.versions) ? Object.fromEntries(Object.entries(b.versions as Record<string, unknown>).map(([k, v]) => [k, String(v)])) : undefined,
+	};
+}
+
+route("POST", "/api/review/accept", async ({ app, body, actor }) => {
+	const b = await body<ReviewAccept & Record<string, unknown>>();
+	return app.reviews.accept({ ...pickOf(b), edit: b.edit && typeof b.edit === "object" ? b.edit : undefined }, actor);
 });
 
-route("POST", "/api/reviews/:id/reject", async ({ app, params, body, actor }) => {
-	const b = await body<{ keys?: string[]; reason?: string }>();
-	return app.reviews.reject(params.id, Array.isArray(b.keys) ? b.keys : undefined, typeof b.reason === "string" ? b.reason : undefined, actor);
+route("POST", "/api/review/reject", async ({ app, body, actor }) => {
+	const b = await body<ReviewReject & Record<string, unknown>>();
+	return app.reviews.reject({ ...pickOf(b), reason: typeof b.reason === "string" ? b.reason : undefined }, actor);
 });
 
-route("POST", "/api/reviews/:id/close", ({ app, params, actor }) => app.reviews.close(params.id, actor));
-
-route("POST", "/api/reviews/:id/comments", async ({ app, params, body, actor }) => {
+route("POST", "/api/review/comments", async ({ app, body, actor }) => {
 	const b = await body<{ body?: string; noteId?: string }>();
-	return app.reviews.comment(params.id, String(b.body ?? ""), b.noteId || undefined, actor);
+	return app.reviews.comment(String(b.body ?? ""), typeof b.noteId === "string" && b.noteId ? b.noteId : undefined, actor);
 });
 
-route("DELETE", "/api/reviews/:id/comments/:cid", ({ app, params }) => app.reviews.removeComment(params.id, params.cid));
+route("DELETE", "/api/review/comments/:cid", ({ app, params }) => app.reviews.removeComment(params.cid));
 
 route("POST", "/api/agents/:id/apply", async ({ app, params, body }) => {
 	const b = await body<{ edits?: Array<{ old: string; new: string }> }>();
 	await app.reviews.applyAgents(params.id, Array.isArray(b.edits) ? b.edits : undefined);
-	return app.reviews.view().catch(() => null);
+	return app.reviews.view();
 });
 
 route("POST", "/api/agents/:id/reject", async ({ app, params }) => {
 	await app.reviews.rejectAgents(params.id);
-	return app.reviews.view().catch(() => null);
+	return app.reviews.view();
 });
 
 // ── dreams ───────────────────────────────────────────────────────────────

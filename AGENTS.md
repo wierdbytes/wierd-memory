@@ -19,13 +19,15 @@ packages/core/src/      shared, no dependencies, no pi imports (runs under bun, 
   api.ts                types of the HTTP API — the contract of server, web, pi, mod, CLI
   digest.ts sessions.ts project(s).ts search.ts secrets.ts prompts.ts schedule.ts report.ts config.ts layout.ts
 packages/server/src/
-  git.ts                Repo: the memory repository — worktrees, commits, branches, history, the remote
+  git.ts                Repo: the memory repository — the dreams branch's worktree, commits, history, the remote
   notefile.ts           a note as a file (front matter + body): lenient parse, canonical render
   memory.ts             MemoryStore: notes / scopes / skills / prompts of a branch as files; note history by id
-  state.ts              StateStore: `.local/` files — state.json, inbox/*.jsonl, reviews/<id>.json, runs/<run>/run.json
+  state.ts              StateStore: `.local/` files — state.json, inbox/*.jsonl, review.json (base commit, pending runs,
+                        comments, AGENTS.md proposals), decisions.jsonl (append-only), runs/<run>/run.json
   app.ts                App: reading, hand edits of the approved branch (one commit each), taking in edits made
                         outside the server, afterMainChange, push / pull, the mutation lock
-  reviews.ts            the review branch: sync (a merge commit), items, accept / edit / reject, a dream's submit
+  reviews.ts            the dreams branch: sync (a merge commit), items and their versions, accept / edit / reject,
+                        comments, AGENTS.md proposals, a dream's submit
   dreams.ts             schedule, spawn and watch the headless pi that dreams; what a dream starts from
   searcher.ts           memory_search / memory_read / evidence
   http.ts               routes (keep docs/api.md and core/api.ts in step with it)
@@ -45,15 +47,21 @@ scripts/build-pi.ts     `bun run build:pi`: packages/pi/dist — index.js (core 
 
 - The approved branch (`memory.branch`, `MAIN` in code) is approved memory. Only these write to it: a hand edit
   (`App`), an accepted review item (`Reviews.accept`), a file edited outside the server (`App.adopt` commits it),
-  a pull. A dream never does: `Reviews.submit` writes to the review branch.
+  a pull. A dream never does: `Reviews.submit` writes to the dreams branch (`memory.reviewBranch`, `dreams`).
+- The dreams branch is permanent: approved memory plus whatever is still proposed. It is made at start when missing
+  (from the remote's, else from the approved branch) and never deleted; nothing opens or closes. Any subset of the
+  items can be decided at any time; every decision is appended to `decisions.jsonl`. `review.json` `runs` holds
+  only the dreams something of which is still pending (pruned after every decision, submit and sync).
 - A store write changes files only; `Repo.commit` makes it a commit with an author. Every change of the approved
-  branch is followed by `App.afterMainChange()` (merges it into the open review branch, bumps `rev`, pushes).
-- Review items are computed (`diffNotes(approved, review branch)`), never stored. Every note that differs must
-  belong to exactly one item, or a review can never close.
+  branch is followed by `App.afterMainChange()` (merges it into the dreams branch, bumps `rev`, pushes).
+- Review items are computed (`diffNotes(approved, dreams)`), never stored. Every note that differs must
+  belong to exactly one item, or it can never be decided. `ReviewItem.version` hashes what deciding it would change;
+  a decision sent with `versions` is refused (409) when an item changed since the client showed it.
 - Notes are told apart by `id`, never by file name or similarity: git's rename detection mistakes one small note
   for another (`--follow` is not used; see `MemoryStore.noteHistory`).
 - A note keeps its file for life (named after its first title), and has the same path on the approved and the
-  review branch wherever its scope allows (`upsert(…, { like })`).
+  dreams branch wherever its scope allows (`upsert(…, { like })`); where a note is the same on both, its file is
+  byte-identical too (`copyFiles`), so `git diff main...dreams` shows only what is proposed.
 - Files are only rewritten when the note in them changed, so a file written by hand or by an older version stays
   byte-identical until its note is edited.
 - All mutations go through `App.lock`. Do not call `lock` from inside a locked function (it would wait for itself).
@@ -76,7 +84,8 @@ scripts/build-pi.ts     `bun run build:pi`: packages/pi/dist — index.js (core 
 - To try something by hand use a sandbox server, never the real one (`~/.wierd-memory`, port 7433 — its repository is
   the user's real memory and is pushed to GitHub): `WMEM_HOME=/tmp/wmem-dev WMEM_PORT=17433 bin/wmem serve`, then
   `WMEM_URL=http://127.0.0.1:17433 bun scripts/seed-review.ts`. CLI calls against it need the same `WMEM_HOME`
-  and `WMEM_PORT`.
+  and `WMEM_PORT`. Stop it by its pid (`$WMEM_HOME/server.json`), never with `pkill -f "cli.ts serve"`: the real
+  server runs the same command line from this checkout, and launchd restarts it at once — on whatever code is here.
 - After changing server code restart the real one: `wmem service restart`.
 
 ## Conventions

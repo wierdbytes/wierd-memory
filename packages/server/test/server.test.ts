@@ -1,7 +1,7 @@
 /**
- * The server on a real git repository: hand edits, a dream's proposals, a
- * review decided item by item, the review branch kept in step with the
- * approved one, a remote. Needs `git` on PATH.
+ * The server on a real git repository: hand edits, dreams' proposals decided
+ * item by item, the dreams branch kept in step with the approved one, a
+ * remote. Needs `git` on PATH.
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
@@ -12,11 +12,14 @@ import { join } from "node:path";
 import {
 	applyOp,
 	type DreamSubmit,
+	type DreamSubmitResult,
 	type DreamWorkspace,
+	type ReviewDecision,
 	type Evidence,
 	type Op,
 	type ReportData,
 	type ReportItem,
+	type ReviewItem,
 	type ReviewView,
 	type StatusInfo,
 	today,
@@ -77,7 +80,7 @@ function report(runId: string, items: ReportItem[] = []): ReportData {
 }
 
 /** What a dream would hand in after applying `ops` to the workspace the server gave it. */
-async function dream(ops: Op[], extra: Partial<DreamSubmit> = {}, during?: (ws: DreamWorkspace) => Promise<void>): Promise<{ runId: string; result: { status: string; reviewId?: string; items?: number }; ids: Record<string, string> }> {
+async function dream(ops: Op[], extra: Partial<DreamSubmit> = {}, during?: (ws: DreamWorkspace) => Promise<void>): Promise<{ runId: string; result: DreamSubmitResult; ids: Record<string, string> }> {
 	const run = (await call<{ id: string }>("POST", "/api/dream/begin", { mode: "run" })).data;
 	const wsData = (await call<DreamWorkspace>("GET", `/api/dream/workspace?run=${run.id}`)).data;
 	const ws = new Workspace(wsData.notes, today(), { pending: wsData.pending, scopes: wsData.scopes });
@@ -92,13 +95,15 @@ async function dream(ops: Op[], extra: Partial<DreamSubmit> = {}, during?: (ws: 
 	}
 	if (during) await during(wsData);
 	const sub: DreamSubmit = { runId: run.id, status: "ok", changes: ws.changes(), votes: {}, report: report(run.id, items), marks: {}, inboxDone: [], commentsDone: [], agents: [], sessions: 1, cost: 0.12, ...extra };
-	const r = await call<{ status: string; reviewId?: string; items?: number }>("POST", "/api/dream/submit", sub);
+	const r = await call<DreamSubmitResult>("POST", "/api/dream/submit", sub);
 	if (r.status !== 200) throw new Error(JSON.stringify(r.data));
 	return { runId: run.id, result: r.data, ids };
 }
 
-const review = async () => (await call<ReviewView | null>("GET", "/api/review")).data;
-const kinds = (v: ReviewView | null) => (v?.items ?? []).map((i) => `${i.kind}:${i.note.title}`).sort();
+const review = async () => (await call<ReviewView>("GET", "/api/review")).data;
+const kinds = (v: ReviewView) => v.items.map((i) => `${i.kind}:${i.note.title}`).sort();
+/** The dreams branch holds exactly what the approved one does. */
+const sameAsApproved = () => sh(memDir, "diff", "--name-status", "main", "dreams");
 
 beforeAll(async () => {
 	home = mkdtempSync(join(tmpdir(), "wmem-test-"));
@@ -182,7 +187,6 @@ describe("approved memory by hand", () => {
 });
 
 describe("a dream's proposals go to review", () => {
-	let reviewId = "";
 	let ids: Record<string, string> = {};
 	let main: Array<{ id: string; title: string; body: string; status: string; scope: string }> = [];
 	const byTitle = (t: string) => main.find((n) => n.title.startsWith(t));
@@ -202,14 +206,14 @@ describe("a dream's proposals go to review", () => {
 			{ op: "supersede", ref: "sup", id: tests.id, replacement: { title: "Тесты запускаются через bun test", body: "bun test" }, rationale: "", evidence: [] },
 		]);
 		ids = d.ids;
-		reviewId = d.result.reviewId as string;
-		expect(d.result).toMatchObject({ status: "ok", items: 4 });
+		expect(d.result).toMatchObject({ status: "ok", items: 4, url: `${app.url}/#/review` });
 		const after = (await call<StatusInfo>("GET", "/api/status")).data;
 		expect(after.memver).toBe(before.memver);
 		expect(after.notes.active).toBe(before.notes.active);
-		expect(after.review?.pending).toBe(4);
-		const v = (await review()) as ReviewView;
-		expect(v.id).toBe(reviewId);
+		expect(after.review).toEqual({ pending: 4, counts: { added: 2, updated: 1, superseded: 1 }, agentsPending: 0, waitingComments: 0 });
+		const v = await review();
+		expect(v.branch).toBe("dreams");
+		expect(v.runInfos.map((r) => r.id)).toEqual([d.runId]);
 		expect(kinds(v)).toEqual(["added:CI гоняет линтер отдельно", "added:Не запускать find от корня", "superseded:Тесты запускаются через bun test", "updated:Dotfiles живут в chezmoi"]);
 		const upd = v.items.find((i) => i.kind === "updated");
 		expect(upd?.fields).toEqual(expect.arrayContaining(["body"]));
@@ -225,14 +229,14 @@ describe("a dream's proposals go to review", () => {
 		expect(ctx.injection.text).not.toContain("find от корня");
 	});
 
-	it("hand edits of approved memory flow into the open review", async () => {
+	it("hand edits of approved memory flow into the dreams branch", async () => {
 		const dot = byTitle("Dotfiles") as { id: string };
 		const ru = byTitle("Отвечать") as { id: string };
 		// a note the review does not touch
 		await call("PATCH", `/api/notes/${ru.id}`, { title: "Отвечать по-русски, коротко" });
 		// another column of a note the review does touch
 		await call("PATCH", `/api/notes/${dot.id}`, { when: "любая правка dotfiles", pinned: true });
-		const v = (await review()) as ReviewView;
+		const v = await review();
 		expect(v.items.length).toBe(4);
 		const upd = v.items.find((i) => i.kind === "updated");
 		expect(upd?.fields.filter((f) => f !== "updated" && f !== "evidence")).toEqual(["body"]);
@@ -242,37 +246,47 @@ describe("a dream's proposals go to review", () => {
 	});
 
 	it("accepts one item after editing it", async () => {
-		const r = await call<ReviewView>("POST", `/api/reviews/${reviewId}/accept`, { keys: [`note:${ids.new1}`], edit: { title: "Никогда не запускать find/grep от корня", index: "pointer", when: "поиск по диску" } });
+		expect((await call<{ error: string }>("POST", "/api/review/accept", {})).status).toBe(400);
+		const r = await call<ReviewView>("POST", "/api/review/accept", { keys: [`note:${ids.new1}`], edit: { title: "Никогда не запускать find/grep от корня", index: "pointer", when: "поиск по диску" } });
 		expect(r.status).toBe(200);
 		expect(r.data.pending).toBe(3);
-		expect(r.data.decisions.map((d) => [d.decision, d.noteId])).toEqual([["edited", ids.new1]]);
+		expect(r.data.recent.map((d) => [d.decision, d.noteId])).toEqual([["edited", ids.new1]]);
 		const n = (await call<{ title: string; index: string; reach: string; evidence: Evidence[] }>("GET", `/api/notes/${ids.new1}`)).data;
 		expect([n.title, n.index, n.reach]).toEqual(["Никогда не запускать find/grep от корня", "pointer", "pointer"]);
-		expect(n.evidence.some((e) => e.s === `review:${reviewId}` && e.kind === "reviewer")).toBe(true);
+		expect(n.evidence.filter((e) => e.s === "review").map((e) => [e.e, e.kind])).toEqual([[[], "reviewer"]]);
 		const log = (await call<Array<{ message: string }>>("GET", "/api/history?limit=1")).data;
-		expect(log[0].message).toContain(`accept added ${ids.new1}`);
-		expect(log[0].message).toContain(`review ${reviewId}`);
+		expect(log[0].message).toBe(`accept added ${ids.new1}: Никогда не запускать find/grep от корня\n\nvia test`);
 	});
 
 	it("rejects one item: it leaves the review and is remembered as rejected", async () => {
-		const r = await call<ReviewView>("POST", `/api/reviews/${reviewId}/reject`, { keys: [`note:${ids.sup}`], reason: "make test is right" });
+		const key = `note:${ids.sup}`;
+		const shown = (await review()).items.find((i) => i.key === key) as ReviewItem;
+		expect(shown.version).toMatch(/^[0-9a-f]{12}$/);
+		expect((await review()).items.find((i) => i.key === key)?.version).toBe(shown.version);
+		// a client that shows an older version decides nothing
+		const stale = await call<{ error: string }>("POST", "/api/review/reject", { keys: [key], versions: { [key]: "0123456789ab" } });
+		expect([stale.status, stale.data.error]).toEqual([409, "«Тесты запускаются через bun test» changed since you looked — reload"]);
+		expect((await review()).pending).toBe(3);
+		const r = await call<ReviewView>("POST", "/api/review/reject", { keys: [key], reason: "make test is right", versions: { [key]: shown.version } });
 		expect(r.data.pending).toBe(2);
+		expect(r.data.recent[0]).toMatchObject({ key, decision: "rejected", reason: "make test is right", by: "test" });
 		await loadMain();
 		expect(byTitle("Тесты запускаются через make test")?.status).toBe("active");
 		expect(main.some((n) => n.id === ids.sup)).toBe(false);
 		expect(await app.state.rejectedTitles()).toEqual(["Тесты запускаются через bun test"]);
-		expect((await call("POST", `/api/reviews/${reviewId}/reject`, { keys: [`note:${ids.sup}`] })).status).toBe(404);
+		expect((await call("POST", "/api/review/reject", { keys: [key] })).status).toBe(404);
+		expect((await call<{ error: string }>("POST", "/api/review/reject", { keys: [key], versions: { [key]: shown.version } })).data.error).toBe(`${key} was decided or withdrawn since you looked`);
 	});
 
-	it("a later dream adds to the open review and sees what is pending", async () => {
+	it("a later dream adds to the same branch and sees what is pending", async () => {
 		const d = await dream([
 			{ op: "add", ref: "new3", scope: "global", type: "fact", title: "Сессии pi лежат в ~/.pi/agent/sessions", body: "", index: "none", rationale: "", evidence: [] },
 			// the pending note of the first dream, changed by the second one
 			{ op: "update", ref: "upd2", id: ids.new2, body: "job lint, отдельный workflow", rationale: "", evidence: [] },
 		]);
-		expect(d.result.reviewId).toBe(reviewId);
-		const v = (await review()) as ReviewView;
-		expect(v.runs.length).toBe(2);
+		expect(d.result.items).toBe(3);
+		const v = await review();
+		expect(v.runInfos.length).toBe(2);
 		expect(kinds(v)).toEqual(["added:CI гоняет линтер отдельно", "added:Сессии pi лежат в ~/.pi/agent/sessions", "updated:Dotfiles живут в chezmoi"]);
 		const pending = v.items.find((i) => i.note.id === ids.new2);
 		expect(pending?.note.body).toBe("job lint, отдельный workflow");
@@ -282,51 +296,56 @@ describe("a dream's proposals go to review", () => {
 
 	it("what the reviewer decides while a dream runs is not undone by it", async () => {
 		const d = await dream([{ op: "update", ref: "upd3", id: ids.new2, title: "CI гоняет линтер отдельным job", rationale: "", evidence: [] }], {}, async () => {
-			await call("POST", `/api/reviews/${reviewId}/reject`, { keys: [`note:${ids.new2}`] });
+			await call("POST", "/api/review/reject", { keys: [`note:${ids.new2}`] });
 		});
-		expect(d.result.reviewId).toBe(reviewId);
+		expect(d.result.items).toBe(2);
 		expect(kinds(await review())).toEqual(["added:Сессии pi лежат в ~/.pi/agent/sessions", "updated:Dotfiles живут в chezmoi"]);
 	});
 
 	it("keeps comments for the next dream", async () => {
 		const dot = byTitle("Dotfiles") as { id: string };
-		const v = (await call<ReviewView>("POST", `/api/reviews/${reviewId}/comments`, { body: "перенеси в проект chezmoi", noteId: dot.id })).data;
+		const v = (await call<ReviewView>("POST", "/api/review/comments", { body: "перенеси в проект chezmoi", noteId: dot.id })).data;
 		expect(v.comments.length).toBe(1);
+		expect(v.waitingComments).toBe(1);
 		const run = (await call<{ id: string }>("POST", "/api/dream/begin", { mode: "review" })).data;
 		const ws = (await call<DreamWorkspace>("GET", `/api/dream/workspace?run=${run.id}`)).data;
-		expect(ws.review?.comments.map((c) => c.body)).toEqual(["перенеси в проект chezmoi"]);
+		expect(ws.comments.map((c) => c.body)).toEqual(["перенеси в проект chezmoi"]);
 		expect(ws.pending.length).toBe(1);
 		expect(ws.state.rejected.length).toBe(2);
-		const sub: DreamSubmit = { runId: run.id, status: "noop", changes: { notes: [], removed: [], scopes: [], skills: [] }, votes: {}, report: report(run.id), marks: {}, inboxDone: [], commentsDone: [{ id: ws.review?.comments[0].id as string, unhandled: "no such project" }], agents: [], sessions: 0, cost: 0 };
+		const sub: DreamSubmit = { runId: run.id, status: "noop", changes: { notes: [], removed: [], scopes: [], skills: [] }, votes: {}, report: report(run.id), marks: {}, inboxDone: [], commentsDone: [{ id: ws.comments[0].id, unhandled: "no such project" }], agents: [], sessions: 0, cost: 0 };
 		expect((await call<{ status: string }>("POST", "/api/dream/submit", sub)).data.status).toBe("noop");
-		const after = (await review()) as ReviewView;
-		expect(after.comments[0].unhandled).toBe("no such project");
+		const after = await review();
+		expect([after.comments[0].unhandled, after.waitingComments]).toEqual(["no such project", 0]);
 		expect(after.warnings.some((w) => w.includes("no such project"))).toBe(true);
+		// what a dream has read stays; evidence can cite it
+		expect((await call("DELETE", `/api/review/comments/${ws.comments[0].id}`)).status).toBe(409);
+		expect((await call<{ comments: Record<string, { body: string }> }>("POST", "/api/evidence", { refs: [{ s: `comment:${ws.comments[0].id}`, e: [] }] })).data.comments[ws.comments[0].id].body).toBe("перенеси в проект chezmoi");
 	});
 
-	it("accepting the rest closes the review and removes its branch", async () => {
-		const r = await call<ReviewView>("POST", `/api/reviews/${reviewId}/accept`, {});
-		expect(r.data.status).toBe("merged");
-		expect([r.data.pending, r.data.accepted, r.data.rejected]).toEqual([0, 3, 2]);
-		expect(await review()).toBeNull();
-		expect(await app.repo.branches()).toEqual([]);
+	it("accepting the rest leaves nothing pending; the dreams branch stays, the same as approved memory", async () => {
+		const r = await call<ReviewView>("POST", "/api/review/accept", { all: true });
+		expect([r.data.pending, r.data.items.length, r.data.runInfos.length]).toEqual([0, 0, 0]);
+		expect(sh(memDir, "branch", "--list", "dreams").replace(/^[+* ]+/, "")).toBe("dreams");
+		expect(sameAsApproved()).toBe("");
 		await loadMain();
 		expect(byTitle("Dotfiles")?.body).toBe("chezmoi apply -v");
 		expect(byTitle("Сессии pi")).toBeTruthy();
-		const list = (await call<Array<{ id: string; status: string }>>("GET", "/api/reviews")).data;
-		expect(list.map((x) => [x.id, x.status])).toEqual([[reviewId, "merged"]]);
-		const closed = (await call<ReviewView>("GET", `/api/reviews/${reviewId}`)).data;
-		expect(closed.decisions.length).toBe(5);
-		expect((await call("POST", `/api/reviews/${reviewId}/accept`, {})).status).toBe(409);
+		const log = (await call<ReviewDecision[]>("GET", "/api/review/decisions")).data;
+		expect(log.map((x) => x.decision)).toEqual(["accepted", "accepted", "rejected", "rejected", "edited"]);
+		expect((await call<ReviewDecision[]>("GET", "/api/review/decisions?limit=2")).data).toEqual(log.slice(0, 2));
+		// nothing left: accepting "all" again changes nothing
+		const head = sh(memDir, "rev-parse", "main");
+		expect((await call<ReviewView>("POST", "/api/review/accept", { all: true })).data.pending).toBe(0);
+		expect(sh(memDir, "rev-parse", "main")).toBe(head);
 	});
 
-	it("a review closed without accepting anything rejects what it held", async () => {
+	it("rejecting all of what a later dream proposed", async () => {
 		const d = await dream([{ op: "add", ref: "n", scope: "global", type: "fact", title: "Совсем лишняя заметка", body: "", index: "none", rationale: "", evidence: [] }]);
-		expect(d.result.reviewId).not.toBe(reviewId);
-		const r = await call<ReviewView>("POST", `/api/reviews/${d.result.reviewId}/close`, {});
-		expect(r.data.status).toBe("closed");
+		expect(d.result.items).toBe(1);
+		const r = await call<ReviewView>("POST", "/api/review/reject", { all: true, reason: "noise" });
+		expect([r.data.pending, r.data.recent[0].decision, r.data.recent[0].reason]).toEqual([0, "rejected", "noise"]);
 		expect(await app.state.rejectedTitles()).toContain("Совсем лишняя заметка");
-		expect(await app.repo.branches()).toEqual([]);
+		expect(sameAsApproved()).toBe("");
 	});
 
 	it("votes, session marks and inbox are taken even when nothing is proposed", async () => {
@@ -337,7 +356,8 @@ describe("a dream's proposals go to review", () => {
 		expect((await app.state.stats()).get(dot.id)).toEqual({ helpful: 2, harmful: 0 });
 		expect(Object.keys(await app.state.marks())).toEqual(["/s/1.jsonl"]);
 		expect(await app.state.inbox("pending")).toEqual([]);
-		expect(await review()).toBeNull();
+		expect([d.result.url, d.result.items]).toEqual([undefined, 0]);
+		expect((await review()).pending).toBe(0);
 		const dreams = (await call<{ runs: Array<{ status: string }>; running: unknown }>("GET", "/api/dreams")).data;
 		expect(dreams.running).toBeNull();
 		expect(dreams.runs[0].status).toBe("noop");
@@ -350,19 +370,19 @@ describe("a dream's proposals go to review", () => {
 		const d = await dream([{ op: "skill", ref: "sk", scope: "global", name: "release-it", description: "How to release", body: "1. bump\n2. tag", rationale: "", evidence: [] }], {
 			agents: [{ projectKey: "github.com/o/r", repoRoot: repo, rel: "AGENTS.md", summary: "tests run with bun", edits: [{ old: "Run make test.", new: "Run bun test." }], rationale: ["seen twice"] }],
 		});
-		const v = (await call<ReviewView>("GET", `/api/reviews/${d.result.reviewId}`)).data;
+		expect(d.result.items).toBe(2);
+		const v = await review();
 		expect(v.items.map((i) => [i.kind, i.key])).toEqual([["skill", "skill:global/release-it"]]);
 		expect(v.agents.map((a) => [a.status, a.rel])).toEqual([["pending", "AGENTS.md"]]);
-		expect(v.pending).toBe(2);
-		await call("POST", `/api/reviews/${v.id}/accept`, { keys: ["skill:global/release-it"] });
+		expect([v.pending, v.agentsPending]).toEqual([2, 1]);
+		await call("POST", "/api/review/accept", { keys: ["skill:global/release-it"] });
 		expect(readFileSync(join(memDir, "scopes", "global", "skills", "release-it", "SKILL.md"), "utf-8")).toContain("description: \"How to release\"");
 		const ctx = (await call<{ skills: string[] }>("GET", `/api/context?cwd=${encodeURIComponent(home)}`)).data;
 		expect(ctx.skills).toEqual([join(memDir, "scopes", "global", "skills")]);
-		expect(((await review()) as ReviewView).status).toBe("open");
-		await call("POST", `/api/agents/${v.agents[0].id}/apply`, {});
+		expect((await review()).runInfos.map((r) => r.id)).toEqual([d.runId]); // its AGENTS.md proposal still waits
+		const after = (await call<ReviewView>("POST", `/api/agents/${v.agents[0].id}/apply`, {})).data;
 		expect(readFileSync(join(repo, "AGENTS.md"), "utf-8")).toBe("# Repo\n\nRun bun test.\n");
-		expect(await review()).toBeNull();
-		expect((await call<ReviewView>("GET", `/api/reviews/${v.id}`)).data.status).toBe("merged");
+		expect([after.pending, after.agents[0].status, after.runInfos.length]).toEqual([0, "applied", 0]);
 		await call("DELETE", "/api/skills?scope=global&name=release-it");
 		expect(existsSync(join(memDir, "scopes", "global", "skills", "release-it"))).toBe(false);
 	});
@@ -462,14 +482,14 @@ describe("memory is a git repository", () => {
 		expect([bare.note.id, bare.note.title, bare.note.created, bare.incomplete]).toEqual(["", "Просто текст", "2026-11-10", true]);
 	});
 
-	it("a review is a branch: git shows exactly what is proposed", async () => {
+	it("what is proposed is a branch: git shows exactly that", async () => {
 		const d = await dream([
 			{ op: "add", ref: "g1", scope: "global", type: "fact", title: "Предложение для проверки ветки", body: "x", index: "none", rationale: "", evidence: [] },
 			{ op: "add", ref: "g2", scope: "project:github.com/new/proj", type: "fact", title: "Первая заметка нового проекта", body: "y", index: "none", rationale: "", evidence: [] },
 		]);
-		const v = (await review()) as ReviewView;
-		expect(v.branch).toBe(`review/${d.result.reviewId}`);
-		expect(sh(memDir, "branch", "--list", "review/*").replace(/^[+* ]+/, "")).toBe(v.branch);
+		const v = await review();
+		expect(v.branch).toBe("dreams");
+		expect(sh(join(memDir, ".local", "worktrees", "dreams"), "rev-parse", "--abbrev-ref", "HEAD")).toBe("dreams");
 		const proposed = () => sh(memDir, "diff", "--name-status", `main...${v.branch}`).split("\n").sort();
 		expect(proposed()).toEqual(["A\tscopes/global/notes/predlozhenie-dlya-proverki-vetki.md", "A\tscopes/projects/github.com__new__proj/notes/pervaya-zametka-novogo-proekta.md", "A\tscopes/projects/github.com__new__proj/scope.json"]);
 		expect(sh(memDir, "log", "-1", "--format=%an|%s", v.branch)).toMatch(/^wierd-memory dream\|dream .*: \+2$/);
@@ -480,20 +500,21 @@ describe("memory is a git repository", () => {
 		const ru = (await call<{ notes: Array<{ id: string; title: string }> }>("GET", "/api/notes?scope=global")).data.notes.find((n) => n.title.startsWith("Отвечать")) as { id: string };
 		await call("PATCH", `/api/notes/${ru.id}`, { pinned: true });
 		await call("PUT", "/api/scopes/global/charter", { charter: "Только важное." });
-		expect(((await review()) as ReviewView).items.length).toBe(2);
+		expect((await review()).items.length).toBe(2);
 		expect(sh(memDir, "merge-base", "main", v.branch)).toBe(sh(memDir, "rev-parse", "main"));
 		expect(sh(memDir, "log", "-1", "--format=%s|%P", v.branch)).toMatch(/^in step with main [0-9a-f]{8}\|[0-9a-f]{40} [0-9a-f]{40}$/);
 		expect(proposed().length).toBe(3);
 		expect(sh(memDir, "show", `${v.branch}:scopes/global/charter.md`)).toBe("Только важное.");
 		// accepting the project's first note brings its folder along; the rest stays proposed
-		await call("POST", `/api/reviews/${v.id}/accept`, { keys: [`note:${d.ids.g2}`] });
+		await call("POST", "/api/review/accept", { keys: [`note:${d.ids.g2}`] });
 		expect(JSON.parse(readFileSync(join(memDir, "scopes/projects/github.com__new__proj/scope.json"), "utf-8")).key).toBe("github.com/new/proj");
 		expect(proposed()).toEqual(["A\tscopes/global/notes/predlozhenie-dlya-proverki-vetki.md"]);
 		expect(sh(memDir, "status", "--porcelain")).toBe("");
-		await call("POST", `/api/reviews/${v.id}/reject`, {});
-		expect(sh(memDir, "branch", "--list", "review/*")).toBe("");
-		expect(readdirSync(join(memDir, ".local", "worktrees"))).toEqual([]);
+		await call("POST", "/api/review/reject", { all: true });
+		expect(proposed()).toEqual([""]);
+		expect(readdirSync(join(memDir, ".local", "worktrees"))).toEqual(["dreams"]);
 		await call("PUT", "/api/scopes/global/charter", { charter: null });
+		expect(sameAsApproved()).toBe("");
 	});
 
 	it("keeps what goes on around memory in files under .local, out of git", async () => {
@@ -502,13 +523,17 @@ describe("memory is a git repository", () => {
 		expect(Object.keys(state.sessions)).toEqual(["/s/1.jsonl"]);
 		expect(state.rejected.map((r: { title: string }) => r.title)).toContain("Совсем лишняя заметка");
 		expect(Object.values(state.inbox).every((i) => ["done", "dismissed"].includes((i as { status: string }).status))).toBe(true);
-		const reviews = readdirSync(join(memDir, ".local", "reviews")).map((f) => JSON.parse(readFileSync(join(memDir, ".local", "reviews", f), "utf-8")));
-		expect(reviews.length).toBeGreaterThanOrEqual(3);
-		const first = reviews.sort((a, b) => a.createdAt.localeCompare(b.createdAt))[0];
-		expect([first.status, first.decisions.length, first.comments.length]).toEqual(["merged", 5, 1]);
-		const run = JSON.parse(readFileSync(join(memDir, ".local", "runs", first.runs[0], "run.json"), "utf-8"));
-		expect([run.kind, run.status, run.reviewId]).toEqual(["run", "ok", first.id]);
-		expect(JSON.parse(readFileSync(join(memDir, ".local", "runs", first.runs[0], "report.json"), "utf-8")).items.length).toBe(4);
+		expect(state.rejected.every((r: object) => !("reviewId" in r))).toBe(true);
+		const rev = JSON.parse(readFileSync(join(memDir, ".local", "review.json"), "utf-8"));
+		expect(Object.keys(rev).sort()).toEqual(["agents", "baseCommit", "comments", "runs"]);
+		expect([rev.baseCommit, rev.runs, rev.comments.length, rev.agents.length]).toEqual([sh(memDir, "rev-parse", "main"), [], 1, 1]);
+		const decisions = readFileSync(join(memDir, ".local", "decisions.jsonl"), "utf-8").trim().split("\n").map((l) => JSON.parse(l));
+		expect(decisions.length).toBe(9);
+		expect(decisions[0]).toMatchObject({ decision: "edited", by: "test" });
+		const first = (await app.state.runs(500)).findLast((r) => r.kind === "run" && r.status === "ok") as { id: string };
+		const run = JSON.parse(readFileSync(join(memDir, ".local", "runs", first.id, "run.json"), "utf-8"));
+		expect([run.kind, run.status, "reviewId" in run]).toEqual(["run", "ok", false]);
+		expect(JSON.parse(readFileSync(join(memDir, ".local", "runs", first.id, "report.json"), "utf-8")).items.length).toBe(4);
 		expect(readFileSync(join(memDir, ".local", "inbox", `${today()}.jsonl`), "utf-8").trim().split("\n").length).toBeGreaterThanOrEqual(2);
 	});
 });
@@ -552,10 +577,12 @@ describe("a remote", () => {
 		expect(notes.map((n) => [n.id, n.title, n.reach])).toEqual([["m-aaaaaa", "Старая заметка", "always"]]);
 		expect(sh(mem, "status", "--porcelain")).toBe("");
 		expect(sh(mem, "log", "--format=%s")).toBe("notes");
+		// the dreams branch starts where approved memory is
+		expect(sh(mem, "rev-parse", "dreams")).toBe(sh(mem, "rev-parse", "main"));
 		expect((await other.status()).remote).toMatchObject({ name: "origin", url: bare, sync: true });
 	});
 
-	it("pushes approved memory and the open review, and drops the review's branch when it is over", async () => {
+	it("pushes approved memory and the dreams branch", async () => {
 		await other.createNote({ scope: "global", title: "Новая заметка", body: "b" });
 		expect(await other.sync()).toContain("pushed 1");
 		expect(remoteHead("main")).toBe(sh(mem, "rev-parse", "main"));
@@ -564,13 +591,13 @@ describe("a remote", () => {
 		const w = new Workspace(ws.notes, today(), { pending: ws.pending, scopes: ws.scopes });
 		applyOp(w, { op: "add", ref: "a", scope: "global", title: "Предложенная", rationale: "", evidence: [] }, { evidence: ev });
 		const res = await other.reviews.submit({ runId: run.id, status: "ok", changes: w.changes(), votes: {}, report: report(run.id), marks: {}, inboxDone: [], commentsDone: [], agents: [], sessions: 0, cost: 0 });
+		expect(res.items).toBe(1);
 		await other.sync();
-		const branch = `review/${res.reviewId}`;
-		expect(remoteHead(branch)).toBe(sh(mem, "rev-parse", branch));
-		expect(((await other.reviews.view()) as ReviewView).compareUrl).toBeUndefined(); // not GitHub
-		await other.reviews.accept(res.reviewId as string, undefined, undefined, "test");
+		expect(remoteHead("dreams")).toBe(sh(mem, "rev-parse", "dreams"));
+		expect((await other.reviews.view()).compareUrl).toBeUndefined(); // not GitHub
+		await other.reviews.accept({ all: true }, "test");
 		await other.sync();
-		expect(() => remoteHead(branch)).toThrow();
+		expect(remoteHead("dreams")).toBe(sh(mem, "rev-parse", "dreams"));
 		expect(remoteHead("main")).toBe(sh(mem, "rev-parse", "main"));
 		expect(sh(bare, "log", "-1", "--format=%s", "main")).toContain("accept added");
 	});
@@ -596,7 +623,11 @@ describe("a remote", () => {
 		const before = (await other.views()).map((n) => [n.id, n.title, n.pinned]).sort();
 		const rejected = await other.state.rejectedTitles();
 		sh(mem, "push", "-q", "origin", "main:notes");
+		const dreams = remoteHead("dreams");
 		await other.stop();
+		// a machine without the dreams branch takes the remote's
+		sh(mem, "worktree", "remove", "--force", join(mem, ".local", "worktrees", "dreams"));
+		sh(mem, "branch", "-D", "dreams");
 		writeFileSync(join(dir, "home", "config.json"), JSON.stringify({ port: 17543, memory: { branch: "notes", remote: "origin", sync: true } }));
 		other = await App.start({ home: join(dir, "home"), noSchedule: true, log: () => {} });
 		expect(sh(mem, "rev-parse", "--abbrev-ref", "HEAD")).toBe("notes");
@@ -604,6 +635,7 @@ describe("a remote", () => {
 		expect((await other.views()).map((n) => [n.id, n.title, n.pinned]).sort()).toEqual(before);
 		expect(sh(mem, "status", "--porcelain")).toBe("");
 		expect((await other.status()).git.branch).toBe("notes");
+		expect([sh(mem, "rev-parse", "dreams"), sh(mem, "rev-parse", "--abbrev-ref", "dreams@{upstream}")]).toEqual([dreams, "origin/dreams"]);
 		// the state beside the repository is the same one
 		expect(await other.state.rejectedTitles()).toEqual(rejected);
 	});

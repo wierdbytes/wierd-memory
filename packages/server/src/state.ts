@@ -6,13 +6,18 @@
  *                       items, rejected titles, usefulness votes
  *   inbox/<day>.jsonl   things kept for the next dream, one JSON object a line,
  *                       append-only
- *   reviews/<id>.json   a review: its branch, every decision made in it, the
- *                       comments left for the dream, AGENTS.md proposals
+ *   review.json         the review: `baseCommit` (the commit of the approved
+ *                       branch the dreams branch is in step with), `runs` (the
+ *                       dreams whose proposals may still be pending), the
+ *                       comments left for dreams, AGENTS.md proposals
+ *   decisions.jsonl     every accept / reject, one JSON object a line,
+ *                       append-only
  *   runs/<run>/         a dream: run.json (when, how it ended, cost) and
  *                       report.json (what it proposed and why) — beside what the
  *                       dream itself saved there
  *
- * The server is the only writer; files are replaced whole (write + rename).
+ * The server is the only writer; files are replaced whole (write + rename),
+ * the `.jsonl` ones are appended to.
  */
 
 import { randomBytes } from "node:crypto";
@@ -23,23 +28,16 @@ import { today } from "@wierd-memory/core";
 
 const now = () => new Date().toISOString();
 
-export interface ReviewRow {
-	id: string;
-	branch: string;
-	status: "open" | "merged" | "closed";
-	title: string;
-	createdAt: string;
-	closedAt?: string;
-	/** The commit of the approved branch the review branch is in step with. */
+export type StoredAgents = Omit<AgentsProposal, "projectName">;
+/** A comment as kept: `processedAt` says since when a dream has applied it. */
+type StoredComment = ReviewComment & { processedAt?: string };
+
+interface ReviewFile {
+	/** The commit of the approved branch the dreams branch is in step with. */
 	baseCommit?: string;
+	/** Dreams whose proposals may still be pending (their reports explain the items). */
 	runs: string[];
-}
-
-type StoredAgents = Omit<AgentsProposal, "projectName">;
-
-interface ReviewFile extends ReviewRow {
-	decisions: ReviewDecision[];
-	comments: ReviewComment[];
+	comments: StoredComment[];
 	agents: StoredAgents[];
 }
 
@@ -50,7 +48,7 @@ interface StateFile {
 	sessions: Record<string, SessionMark>;
 	/** Inbox items that are no longer pending. */
 	inbox: Record<string, { status: "done" | "dismissed"; runId?: string; at: string }>;
-	rejected: Array<{ title: string; at: string; reviewId?: string; noteId?: string }>;
+	rejected: Array<{ title: string; at: string; noteId?: string }>;
 	stats: Record<string, NoteStats>;
 	[key: string]: unknown;
 }
@@ -74,7 +72,8 @@ function writeJson(path: string, value: unknown): void {
 
 export class StateStore {
 	private state: StateFile | undefined;
-	private reviewFiles: Map<string, ReviewFile> | undefined;
+	private reviewFile: ReviewFile | undefined;
+	private decisionLog: ReviewDecision[] | undefined;
 	private runFiles: Map<string, StoredRun> | undefined;
 
 	constructor(private paths: HomePaths) {}
@@ -280,125 +279,135 @@ export class StateStore {
 			.map((r) => this.info(r));
 	}
 
-	// ── reviews ──────────────────────────────────────────────────────────
+	// ── the review ───────────────────────────────────────────────────────
 
-	private reviewMap(): Map<string, ReviewFile> {
-		if (!this.reviewFiles) {
-			this.reviewFiles = new Map();
-			let names: string[] = [];
+	private review(): ReviewFile {
+		if (!this.reviewFile) {
+			const r = readJson<Partial<ReviewFile>>(this.paths.review) ?? {};
+			this.reviewFile = { ...(r.baseCommit ? { baseCommit: r.baseCommit } : {}), runs: r.runs ?? [], comments: r.comments ?? [], agents: r.agents ?? [] };
+		}
+		return this.reviewFile;
+	}
+
+	private saveReview(): void {
+		const r = this.review();
+		writeJson(this.paths.review, { baseCommit: r.baseCommit, runs: r.runs, comments: r.comments, agents: r.agents });
+	}
+
+	async baseCommit(): Promise<string | undefined> {
+		return this.review().baseCommit;
+	}
+
+	async setBaseCommit(commit: string): Promise<void> {
+		if (this.review().baseCommit === commit) return;
+		this.review().baseCommit = commit;
+		this.saveReview();
+	}
+
+	/** Dreams whose proposals may still be pending, in the order they came. */
+	async reviewRuns(): Promise<string[]> {
+		return [...this.review().runs];
+	}
+
+	async setReviewRuns(runs: readonly string[]): Promise<void> {
+		const cur = this.review().runs;
+		if (cur.length === runs.length && cur.every((r, i) => r === runs[i])) return;
+		this.review().runs = [...runs];
+		this.saveReview();
+	}
+
+	// ── decisions ────────────────────────────────────────────────────────
+
+	private decisionList(): ReviewDecision[] {
+		if (!this.decisionLog) {
+			this.decisionLog = [];
+			let text = "";
 			try {
-				names = readdirSync(this.paths.reviews).filter((n) => n.endsWith(".json"));
+				text = readFileSync(this.paths.decisions, "utf-8");
 			} catch {
-				// no reviews yet
+				// nothing decided yet
 			}
-			for (const name of names) {
-				const r = readJson<ReviewFile>(join(this.paths.reviews, name));
-				if (r?.id) this.reviewFiles.set(r.id, { ...r, runs: r.runs ?? [], decisions: r.decisions ?? [], comments: r.comments ?? [], agents: r.agents ?? [] });
+			for (const line of text.split("\n")) {
+				if (!line.trim()) continue;
+				try {
+					const d = JSON.parse(line) as ReviewDecision;
+					if (d?.key && d.decision) this.decisionLog.push(d);
+				} catch {
+					// a torn line
+				}
 			}
 		}
-		return this.reviewFiles;
+		return this.decisionLog;
 	}
 
-	private saveReviewFile(r: ReviewFile): void {
-		this.reviewMap().set(r.id, r);
-		writeJson(join(this.paths.reviews, `${r.id.replace(/[^A-Za-z0-9-]/g, "")}.json`), r);
+	/** The latest decisions, newest first. */
+	async decisions(limit = 100): Promise<ReviewDecision[]> {
+		return this.decisionList().slice(-limit).reverse();
 	}
 
-	private row(r: ReviewFile): ReviewRow {
-		return { id: r.id, branch: r.branch, status: r.status, title: r.title, createdAt: r.createdAt, closedAt: r.closedAt, baseCommit: r.baseCommit, runs: [...r.runs] };
+	async addDecisions(list: readonly ReviewDecision[]): Promise<void> {
+		if (!list.length) return;
+		const log = this.decisionList();
+		mkdirSync(dirname(this.paths.decisions), { recursive: true });
+		appendFileSync(this.paths.decisions, list.map((d) => `${JSON.stringify(d)}\n`).join(""), "utf-8");
+		log.push(...list);
 	}
 
-	private sorted(): ReviewFile[] {
-		return [...this.reviewMap().values()].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+	// ── comments for dreams ──────────────────────────────────────────────
+
+	private publicComment(c: StoredComment): ReviewComment {
+		const { processedAt: _at, ...out } = c;
+		return { ...out };
 	}
 
-	async openReview(): Promise<ReviewRow | undefined> {
-		const r = this.sorted().find((x) => x.status === "open");
-		return r ? this.row(r) : undefined;
+	/** Every comment, oldest first, with since when a dream has applied it. */
+	async comments(): Promise<Array<ReviewComment & { processedAt?: string }>> {
+		return this.review().comments.map((c) => ({ ...c }));
 	}
 
-	async review(id: string): Promise<ReviewRow | undefined> {
-		const r = this.reviewMap().get(id);
-		return r ? this.row(r) : undefined;
+	async comment(id: string): Promise<ReviewComment | undefined> {
+		const c = this.review().comments.find((x) => x.id === id);
+		return c ? this.publicComment(c) : undefined;
 	}
 
-	async reviews(limit = 50): Promise<ReviewRow[]> {
-		return this.sorted()
-			.slice(0, limit)
-			.map((r) => this.row(r));
+	async addComment(body: string, author: string, noteId?: string): Promise<ReviewComment> {
+		const c: ReviewComment = { id: `c-${randomBytes(4).toString("hex")}`, ...(noteId ? { noteId } : {}), body, author, at: now() };
+		this.review().comments.push(c);
+		this.saveReview();
+		return { ...c };
 	}
 
-	async saveReview(r: ReviewRow): Promise<void> {
-		const cur = this.reviewMap().get(r.id);
-		this.saveReviewFile({ decisions: [], comments: [], agents: [], ...cur, ...r, runs: [...r.runs] });
-	}
-
-	async decisions(reviewId: string): Promise<ReviewDecision[]> {
-		return [...(this.reviewMap().get(reviewId)?.decisions ?? [])];
-	}
-
-	async decisionCounts(reviewIds: readonly string[]): Promise<Record<string, { accepted: number; rejected: number }>> {
-		const out: Record<string, { accepted: number; rejected: number }> = {};
-		for (const id of reviewIds) {
-			const r = this.reviewMap().get(id);
-			if (!r?.decisions.length) continue;
-			out[id] = { accepted: r.decisions.filter((d) => d.decision !== "rejected").length, rejected: r.decisions.filter((d) => d.decision === "rejected").length };
-		}
-		return out;
-	}
-
-	async addDecision(reviewId: string, d: ReviewDecision): Promise<void> {
-		const r = this.reviewMap().get(reviewId);
-		if (!r) return;
-		r.decisions.push(d);
-		this.saveReviewFile(r);
-	}
-
-	async comments(reviewId: string): Promise<ReviewComment[]> {
-		return [...(this.reviewMap().get(reviewId)?.comments ?? [])];
-	}
-
-	async addComment(reviewId: string, body: string, author: string, noteId?: string): Promise<ReviewComment> {
-		const c: ReviewComment = { id: `c-${randomBytes(4).toString("hex")}`, reviewId, ...(noteId ? { noteId } : {}), body, author, at: now() };
-		const r = this.reviewMap().get(reviewId);
-		if (r) {
-			r.comments.push(c);
-			this.saveReviewFile(r);
-		}
-		return c;
-	}
-
-	/** Remove a comment no dream has read yet. */
-	async removeComment(id: string): Promise<void> {
-		for (const r of this.reviewMap().values()) {
-			const i = r.comments.findIndex((c) => c.id === id && !c.processedRun);
-			if (i < 0) continue;
-			r.comments.splice(i, 1);
-			this.saveReviewFile(r);
-		}
+	/** Remove a comment no dream has applied yet: "gone" when there is no such comment, "applied" when a dream has. */
+	async removeComment(id: string): Promise<"ok" | "gone" | "applied"> {
+		const list = this.review().comments;
+		const i = list.findIndex((c) => c.id === id);
+		if (i < 0) return "gone";
+		if (list[i].processedRun) return "applied";
+		list.splice(i, 1);
+		this.saveReview();
+		return "ok";
 	}
 
 	async markComments(done: ReadonlyArray<{ id: string; unhandled?: string }>, runId: string): Promise<void> {
 		if (!done.length) return;
 		const by = new Map(done.map((d) => [d.id, d]));
-		for (const r of this.reviewMap().values()) {
-			let touched = false;
-			for (const c of r.comments) {
-				const d = by.get(c.id);
-				if (!d) continue;
-				c.processedRun = runId;
-				if (d.unhandled) c.unhandled = d.unhandled;
-				touched = true;
-			}
-			if (touched) this.saveReviewFile(r);
+		let touched = false;
+		for (const c of this.review().comments) {
+			const d = by.get(c.id);
+			if (!d) continue;
+			c.processedRun = runId;
+			c.processedAt = now();
+			if (d.unhandled) c.unhandled = d.unhandled;
+			touched = true;
 		}
+		if (touched) this.saveReview();
 	}
 
 	// ── rejected titles ──────────────────────────────────────────────────
 
-	async addRejection(title: string, reviewId?: string, noteId?: string): Promise<void> {
+	async addRejection(title: string, noteId?: string): Promise<void> {
 		const s = this.load();
-		s.rejected.push({ title, at: now(), ...(reviewId ? { reviewId } : {}), ...(noteId ? { noteId } : {}) });
+		s.rejected.push({ title, at: now(), ...(noteId ? { noteId } : {}) });
 		s.rejected = s.rejected.slice(-400);
 		this.save();
 	}
@@ -431,49 +440,39 @@ export class StateStore {
 
 	// ── AGENTS.md proposals ──────────────────────────────────────────────
 
-	async agentsProposals(where: { status?: AgentsProposal["status"]; reviewId?: string } = {}): Promise<StoredAgents[]> {
-		const out: StoredAgents[] = [];
-		for (const r of this.reviewMap().values()) {
-			if (where.reviewId && r.id !== where.reviewId) continue;
-			for (const a of r.agents) if (!where.status || a.status === where.status) out.push({ ...a });
-		}
-		return out.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+	async agentsProposals(where: { status?: AgentsProposal["status"] } = {}): Promise<StoredAgents[]> {
+		return this.review()
+			.agents.filter((a) => !where.status || a.status === where.status)
+			.map((a) => ({ ...a }))
+			.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
 	}
 
 	async agentsProposal(id: string): Promise<StoredAgents | undefined> {
-		for (const r of this.reviewMap().values()) {
-			const a = r.agents.find((x) => x.id === id);
-			if (a) return { ...a };
-		}
-		return undefined;
+		const a = this.review().agents.find((x) => x.id === id);
+		return a ? { ...a } : undefined;
 	}
 
-	async addAgentsProposal(p: { runId: string; reviewId: string; projectKey: string; repoRoot: string; rel: string; summary?: string; edits: AgentsProposal["edits"]; rationale: string[] }): Promise<string> {
-		const r = this.reviewMap().get(p.reviewId);
-		if (!r) throw new Error(`no review ${p.reviewId}`);
+	async addAgentsProposal(p: { runId: string; projectKey: string; repoRoot: string; rel: string; summary?: string; edits: AgentsProposal["edits"]; rationale: string[] }): Promise<string> {
 		const id = `a-${randomBytes(4).toString("hex")}`;
-		r.agents.push({ id, runId: p.runId, reviewId: p.reviewId, projectKey: p.projectKey, repoRoot: p.repoRoot, rel: p.rel, ...(p.summary ? { summary: p.summary } : {}), edits: p.edits, rationale: p.rationale, status: "pending", createdAt: now() });
-		this.saveReviewFile(r);
+		this.review().agents.push({ id, runId: p.runId, projectKey: p.projectKey, repoRoot: p.repoRoot, rel: p.rel, ...(p.summary ? { summary: p.summary } : {}), edits: p.edits, rationale: p.rationale, status: "pending", createdAt: now() });
+		this.saveReview();
 		return id;
 	}
 
 	async updateAgentsProposal(id: string, patch: { status?: AgentsProposal["status"]; error?: string | null; edits?: AgentsProposal["edits"] }): Promise<void> {
-		for (const r of this.reviewMap().values()) {
-			const a = r.agents.find((x) => x.id === id);
-			if (!a) continue;
-			if (patch.status) {
-				a.status = patch.status;
-				if (patch.status === "pending") delete a.decidedAt;
-				else a.decidedAt = now();
-			}
-			if ("error" in patch) {
-				if (patch.error) a.error = patch.error;
-				else delete a.error;
-			}
-			if (patch.edits) a.edits = patch.edits;
-			this.saveReviewFile(r);
-			return;
+		const a = this.review().agents.find((x) => x.id === id);
+		if (!a) return;
+		if (patch.status) {
+			a.status = patch.status;
+			if (patch.status === "pending") delete a.decidedAt;
+			else a.decidedAt = now();
 		}
+		if ("error" in patch) {
+			if (patch.error) a.error = patch.error;
+			else delete a.error;
+		}
+		if (patch.edits) a.edits = patch.edits;
+		this.saveReview();
 	}
 
 	/** Whether the state file exists (a fresh home has none). */

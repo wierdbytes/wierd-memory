@@ -42,7 +42,7 @@ export async function runDream(ctx: ExtensionContext, args: RunArgs): Promise<vo
 			submit: (sub: DreamSubmit) => client.post<DreamSubmitResult>("/api/dream/submit", sub, 120_000),
 		};
 		const out = await dream(id, { api, llm: new Llm(ctx, log, controller.signal), log, signal: controller.signal });
-		log(`done: ${out.result?.status ?? out.status}${out.result?.reviewId ? ` — review ${out.result.reviewId}: ${out.result.items} item(s) to decide, ${out.result.url}` : ""} · ${out.sessions} session(s) · $${out.cost.toFixed(2)}`);
+		log(`done: ${out.result?.status ?? out.status}${out.result?.url ? ` — ${out.result.items ?? 0} item(s) to decide, ${out.result.url}` : ""} · ${out.sessions} session(s) · $${out.cost.toFixed(2)}`);
 	} catch (err) {
 		const msg = err instanceof Error ? (err.stack ?? err.message) : String(err);
 		log(`ERROR: ${msg}`);

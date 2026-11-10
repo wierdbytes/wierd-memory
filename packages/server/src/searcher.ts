@@ -208,16 +208,21 @@ export class Searcher {
 		return undefined;
 	}
 
-	/** What notes cite: each session's name and the cited lines of its digest; inbox items by id. */
+	/** What notes cite: each session's name and the cited lines of its digest; inbox items and review comments by id. */
 	async evidence(refs: readonly EvidenceRef[]): Promise<EvidenceInfo> {
 		const root = this.app.paths.digests;
 		const dirs = existsSync(root) ? readdirSync(root, { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => d.name) : [];
-		const out: EvidenceInfo = { sessions: {}, inbox: {} };
+		const out: EvidenceInfo = { sessions: {}, inbox: {}, comments: {} };
 		const wantInbox = new Set<string>();
+		const wantComments = new Set<string>();
 		for (const ref of refs) {
 			const s = String(ref?.s ?? "");
 			if (s.startsWith("inbox:")) {
 				wantInbox.add(s.slice(6));
+				continue;
+			}
+			if (s.startsWith("comment:")) {
+				wantComments.add(s.slice(8));
 				continue;
 			}
 			if (!/^[0-9a-zA-Z-]{8,}$/.test(s)) continue;
@@ -246,6 +251,10 @@ export class Searcher {
 		for (const id of wantInbox) {
 			const item = await this.app.state.inboxItem(id);
 			if (item) out.inbox[id] = item;
+		}
+		for (const id of wantComments) {
+			const c = await this.app.state.comment(id);
+			if (c) out.comments[id] = c;
 		}
 		return out;
 	}

@@ -194,7 +194,7 @@ export class Runtime {
 			// best effort
 		}
 		if (last.status === "error") ctx.ui.notify(`wierd-memory: the last dream failed — ${last.error ?? ""} (/dream log)`, "warning");
-		else if (s.review?.pending) ctx.ui.notify(`wierd-memory: ${s.review.pending} memory change(s) wait for your review — ${s.url}/#/review`, "info");
+		else if (s.review.pending) ctx.ui.notify(`wierd-memory: ${s.review.pending} memory change(s) wait for your review — ${s.url}/#/review`, "info");
 	}
 
 	async status(ctx: ExtensionContext): Promise<string> {
@@ -213,7 +213,7 @@ export class Runtime {
 				`inbox:    ${s.inbox} pending`,
 				`dream:    ${d.running ? `running (${d.running.id})` : `${d.due.due ? "due" : "not due"} (${d.due.reason})`}`,
 				`last:     ${d.last ? `${d.last.status} ${d.last.finishedAt ?? d.last.startedAt}${d.last.error ? ` — ${d.last.error}` : ""}` : "never"}`,
-				`review:   ${s.review ? `${s.review.pending} to decide — ${s.url}/#/review` : "nothing to review"}`,
+				`review:   ${s.review.pending ? `${s.review.pending} to decide — ${s.url}/#/review` : "nothing to decide"}`,
 				`cwd:      ${ctx.cwd}`,
 			].join("\n");
 		} catch (err) {

@@ -30,9 +30,14 @@ export interface WmemConfig {
 		dir: string;
 		/** The branch that is approved memory: what sessions get. */
 		branch: string;
+		/**
+		 * The branch dreams write to: approved memory plus everything still
+		 * proposed. Never deleted; checked out at `.local/worktrees/<name>`.
+		 */
+		reviewBranch: string;
 		/** The remote to push to and pull from (`origin`); empty: none. */
 		remote: string;
-		/** Push approved memory and review branches after every change, pull on a schedule. */
+		/** Push approved memory and the dreams branch after every change, pull on a schedule. */
 		sync: boolean;
 	};
 	/** Language dreams write notes in. */
@@ -79,7 +84,7 @@ export interface WmemConfig {
 export function defaults(): WmemConfig {
 	return {
 		port: 7433,
-		memory: { dir: "", branch: "main", remote: "origin", sync: true },
+		memory: { dir: "", branch: "main", reviewBranch: "dreams", remote: "origin", sync: true },
 		language: "Russian",
 		inject: true,
 		models: {
@@ -123,10 +128,15 @@ export function sanitize(raw: unknown): WmemConfig {
 	cfg.port = Math.round(num(raw.port, 1, 65535, d.port));
 	if (isObj(raw.memory)) {
 		const m = raw.memory;
-		const branch = typeof m.branch === "string" && /^[A-Za-z0-9._/-]{1,100}$/.test(m.branch.trim()) && !m.branch.includes("..") ? m.branch.trim() : d.memory.branch;
+		const branchName = (v: unknown, fallback: string) => (typeof v === "string" && /^[A-Za-z0-9._/-]{1,100}$/.test(v.trim()) && !v.includes("..") ? v.trim() : fallback);
+		const branch = branchName(m.branch, d.memory.branch);
+		let reviewBranch = branchName(m.reviewBranch, d.memory.reviewBranch);
+		// The two must differ: proposals never land on approved memory.
+		if (reviewBranch === branch) reviewBranch = branch === d.memory.reviewBranch ? `${branch}-proposed` : d.memory.reviewBranch;
 		cfg.memory = {
 			dir: typeof m.dir === "string" ? m.dir.trim() : d.memory.dir,
 			branch,
+			reviewBranch,
 			remote: typeof m.remote === "string" && /^[A-Za-z0-9._-]*$/.test(m.remote.trim()) ? m.remote.trim() : d.memory.remote,
 			sync: bool(m.sync, d.memory.sync),
 		};

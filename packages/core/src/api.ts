@@ -108,6 +108,11 @@ export interface ContextInfo {
 }
 
 // ── review ───────────────────────────────────────────────────────────────
+//
+// There is one review and it never opens or closes: everything dreams propose
+// waits on one branch (`memory.reviewBranch`, `dreams`) — approved memory plus
+// what is still to decide. Any part of it can be accepted or rejected at any
+// time; what is left stays until decided. Decisions go to a log.
 
 export type ItemKind = DiffKind | "skill";
 
@@ -145,6 +150,12 @@ export interface ReviewItem {
 	remark?: string;
 	/** Dreams that touched it. */
 	runs: string[];
+	/**
+	 * Changes whenever what deciding the item would do changes (a dream rewrote
+	 * the proposal, the approved note moved on). Accept / reject with `versions`
+	 * refuse an item whose version is not the one the client showed.
+	 */
+	version: string;
 	/** Text can be edited before accepting (not for closing or confirming a note). */
 	editable: boolean;
 	/** kind `skill`: the skill proposed. */
@@ -165,8 +176,7 @@ export interface ReviewDecision {
 
 export interface ReviewComment {
 	id: string;
-	reviewId: string;
-	/** The note the comment is about; absent: the whole review. */
+	/** The note the comment is about; absent: what is proposed as a whole. */
 	noteId?: string;
 	body: string;
 	author: string;
@@ -180,7 +190,6 @@ export interface ReviewComment {
 export interface AgentsProposal {
 	id: string;
 	runId: string;
-	reviewId?: string;
 	projectKey: string;
 	projectName: string;
 	repoRoot: string;
@@ -205,43 +214,67 @@ export interface RunInfo {
 	error?: string;
 	sessions?: number;
 	cost?: number;
-	reviewId?: string;
 	title?: string;
 	pid?: number;
 	/** How it was started: `schedule`, `user`, `agent`. */
 	trigger?: string;
 }
 
+/** What waits for a decision, in short (status lines, badges). */
 export interface ReviewSummary {
-	id: string;
-	status: "open" | "merged" | "closed";
-	title: string;
-	createdAt: string;
-	closedAt?: string;
-	/** Items still to decide (open reviews). */
+	/** Items plus AGENTS.md proposals still to decide. */
 	pending: number;
-	accepted: number;
-	rejected: number;
-	runs: string[];
+	/** Items by kind (AGENTS.md proposals not included). */
+	counts: Partial<Record<ItemKind, number>>;
+	/** AGENTS.md proposals still to decide. */
+	agentsPending: number;
+	/** Comments no dream has applied yet. */
+	waitingComments: number;
 }
 
+/** `GET /api/review`: everything that waits for a decision. */
 export interface ReviewView extends ReviewSummary {
+	/** The branch dreams write to (`dreams`): approved memory plus what is still proposed. */
 	branch: string;
 	items: ReviewItem[];
-	decisions: ReviewDecision[];
-	comments: ReviewComment[];
+	/** Pending proposals, and those decided in the last 14 days (newest first). */
 	agents: AgentsProposal[];
-	/** What the dreams of this review proposed and their own fact check threw out. */
+	/** Comments no dream has applied yet, and those applied in the last 14 days (oldest first). */
+	comments: ReviewComment[];
+	/** The latest decisions, newest first (more: `GET /api/review/decisions`). */
+	recent: ReviewDecision[];
+	/** What the dreams behind the pending items proposed and their own fact check threw out. */
 	rejectedByCheck: Array<ReportRejected & { run: string }>;
 	warnings: string[];
+	/** The dreams whose proposals are still pending, newest first. */
 	runInfos: RunInfo[];
 	/** Session id → title, for the evidence of the items. */
 	sessionTitles: Record<string, string>;
 	/** Scope id → name, for every scope the items mention. */
 	scopeNames: Record<string, string>;
-	counts: Partial<Record<ItemKind, number>>;
-	/** Where the same difference can be seen on the remote (GitHub: approved branch ... review branch). */
+	/** Where the same difference can be seen on the remote (GitHub: approved branch ... dreams branch). */
 	compareUrl?: string;
+}
+
+/**
+ * Which items a decision is about: `keys` (item keys) or `all: true` (one of
+ * the two is required). `versions` (key → `ReviewItem.version` as shown):
+ * the server refuses with 409 when an item changed since, nothing is decided.
+ */
+export interface ReviewPick {
+	keys?: string[];
+	all?: boolean;
+	versions?: Record<string, string>;
+}
+
+/** `POST /api/review/accept`. `edit` (exactly one key): the reviewer's text, accepted in its place. */
+export interface ReviewAccept extends ReviewPick {
+	edit?: NoteEdit;
+}
+
+/** `POST /api/review/reject`. Rejected titles are not proposed again without new evidence. */
+export interface ReviewReject extends ReviewPick {
+	reason?: string;
 }
 
 /** Text of a note as edited by the reviewer before accepting. */
@@ -312,11 +345,11 @@ export interface DreamWorkspace {
 		rejected: string[];
 	};
 	inbox: InboxItem[];
-	/** The open review the dream continues, with the comments it has not applied yet. */
-	review: { id: string; comments: ReviewComment[] } | null;
-	/** Approved notes plus what the open review proposes. */
+	/** Review comments no dream has applied yet. */
+	comments: ReviewComment[];
+	/** Approved notes plus what is still proposed (the dreams branch). */
 	notes: Note[];
-	/** Note ids that exist only in the open review. */
+	/** Note ids that exist only on the dreams branch (proposed, not approved yet). */
 	pending: string[];
 	scopes: Array<ScopeMeta & { charter?: string | null }>;
 	/** Prompt overrides and the default purpose of project memory. */
@@ -342,8 +375,9 @@ export interface DreamSubmit {
 
 export interface DreamSubmitResult {
 	status: RunInfo["status"];
-	reviewId?: string;
+	/** The review page, when the dream proposed something. */
 	url?: string;
+	/** Everything waiting for a decision after this dream (not only its own). */
 	items?: number;
 }
 
@@ -373,6 +407,8 @@ export interface EvidenceInfo {
 		}
 	>;
 	inbox: Record<string, InboxItem>;
+	/** Review comments cited as `comment:<id>`. */
+	comments: Record<string, ReviewComment>;
 }
 
 // ── status ───────────────────────────────────────────────────────────────
@@ -387,7 +423,7 @@ export interface StatusInfo {
 	rev: number;
 	notes: { total: number; active: number; off: number; archived: number; scopes: number };
 	inbox: number;
-	review: ReviewSummary | null;
+	review: ReviewSummary;
 	dream: { running: RunInfo | null; last: RunInfo | null; due: DueCheck; scheduled: boolean };
 	/** The repository memory is kept in: its folder, the approved branch and the commit it is at. */
 	git: { dir: string; branch: string; head: string };

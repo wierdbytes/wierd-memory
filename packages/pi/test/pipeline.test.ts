@@ -7,7 +7,7 @@ import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { DreamSubmit, ReviewView, Stage, StageModel, StageUsage } from "@wierd-memory/core";
+import type { DreamSubmit, Stage, StageModel, StageUsage } from "@wierd-memory/core";
 import { App } from "../../server/src/app.ts";
 import { type DreamApi, dream, type DreamLlm, parseRunArgs } from "../pipeline.ts";
 
@@ -43,7 +43,7 @@ function session(dir: string, id: string, cwd: string, turns: Array<[string, str
 class Script implements DreamLlm {
 	usage: Partial<Record<Stage, StageUsage>> = {};
 	calls: Array<{ stage: Stage; system: string; user: string }> = [];
-	review: (input: { comments: Array<{ id: string; note?: string; body: string }>; review: string }) => unknown = () => ({ ops: [] });
+	review: (input: { comments: Array<{ id: string; note?: string; body: string }> }) => unknown = () => ({ ops: [] });
 
 	totalCost(): number {
 		return Object.values(this.usage).reduce((s, u) => s + (u?.cost ?? 0), 0);
@@ -131,7 +131,6 @@ afterAll(async () => {
 describe("a dream", () => {
 	const scope = () => `projects/local__${proj.split("/").filter(Boolean).join("__")}`.replace(/[^A-Za-z0-9._/-]/g, "_");
 	let existing = "";
-	let reviewId = "";
 
 	it("reads new sessions and proposes notes with checked evidence", async () => {
 		existing = (await app.createNote({ scope: scope(), title: "Тесты запускаются через make test", body: "make test", index: "pointer", when: "тесты" })).id;
@@ -141,8 +140,8 @@ describe("a dream", () => {
 		const { id, out } = await run(llm);
 		expect(out.status).toBe("ok");
 		expect(out.sessions).toBe(2);
-		reviewId = out.result?.reviewId as string;
-		const v = (await app.reviews.view()) as ReviewView;
+		expect(out.result?.items).toBe(4);
+		const v = await app.reviews.view();
 		const got = v.items.map((i) => `${i.kind}:${i.note.title}`).sort();
 		expect(got).toEqual(["added:Всегда запускай линтер перед коммитом", "added:Никогда не трогай vendor/ (в этом проекте)", "added:Релизы только по пятницам", "updated:Тесты запускаются через make test"]);
 		const lint = v.items.find((i) => i.note.title.startsWith("Всегда"));
@@ -163,7 +162,8 @@ describe("a dream", () => {
 		expect(existsSync(join(home, "memory", ".local", "digests", "index.json"))).toBe(true);
 		expect(readFileSync(join(home, "memory", ".local", "runs", id, "report.md"), "utf-8")).toContain("# dream ");
 		const stored = await app.state.run(id);
-		expect([stored?.status, stored?.sessions, stored?.reviewId]).toEqual(["ok", 2, reviewId]);
+		expect([stored?.status, stored?.sessions]).toEqual(["ok", 2]);
+		expect(v.runInfos.map((r) => r.id)).toEqual([id]);
 		expect(stored?.report?.usage.cards?.calls).toBe(2);
 		// approved memory is untouched
 		expect((await app.mem.notes()).length).toBe(1);
@@ -183,41 +183,42 @@ describe("a dream", () => {
 		const { out } = await run(llm);
 		expect(out.status).toBe("noop");
 		expect(llm.calls).toEqual([]);
-		expect(((await app.reviews.view()) as ReviewView).items.length).toBe(4);
+		expect((await app.reviews.view()).items.length).toBe(4);
 	});
 
 	it("applies review comments in a comments-only pass", async () => {
-		const v = (await app.reviews.view()) as ReviewView;
+		const v = await app.reviews.view();
 		const lint = v.items.find((i) => i.note.title.startsWith("Всегда"))?.note.id as string;
 		const vendor = v.items.find((i) => i.note.title.startsWith("Никогда"))?.note.id as string;
-		await app.reviews.comment(reviewId, "сделай короче", lint);
-		await app.reviews.comment(reviewId, "это не нужно", vendor);
-		await app.reviews.comment(reviewId, "и перекрась кнопку", undefined);
-		const comments = await app.state.comments(reviewId);
+		await app.reviews.comment("сделай короче", lint);
+		await app.reviews.comment("это не нужно", vendor);
+		await app.reviews.comment("и перекрась кнопку", undefined);
+		const comments = await app.state.comments();
 		const llm = new Script();
-		llm.review = (input) => ({
+		llm.review = () => ({
 			ops: [
-				{ op: "update", ref: "r1", id: lint, title: "Линтер перед коммитом", rationale: "по комментарию", evidence: [{ s: `review:${input.review}`, e: [comments[0].id] }] },
-				{ op: "deprecate", ref: "r2", id: vendor, rationale: "по комментарию", evidence: [{ s: `review:${input.review}`, e: [comments[1].id] }] },
+				{ op: "update", ref: "r1", id: lint, title: "Линтер перед коммитом", rationale: "по комментарию", evidence: [{ s: `comment:${comments[0].id}`, e: [] }] },
+				{ op: "deprecate", ref: "r2", id: vendor, rationale: "по комментарию", evidence: [{ s: `comment:${comments[1].id}`, e: [] }] },
 			],
 			unhandled: [{ comment: comments[2].id, reason: "не про память" }],
 		});
 		const { out } = await run(llm, "review");
 		expect(out.status).toBe("ok");
 		expect(JSON.parse(llm.calls[0].user).comments.map((c: { note?: string }) => c.note)).toEqual([lint, vendor, undefined]);
-		const after = (await app.reviews.view()) as ReviewView;
+		const after = await app.reviews.view();
 		expect(after.items.map((i) => `${i.kind}:${i.note.title}`).sort()).toEqual(["added:Линтер перед коммитом", "added:Релизы только по пятницам", "updated:Тесты запускаются через make test"]);
 		const edited = after.items.find((i) => i.note.id === lint);
 		expect(edited?.reviewer).toBe(true);
-		expect(edited?.note.evidence.at(-1)).toMatchObject({ s: `review:${reviewId}`, e: [comments[0].id], kind: "reviewer" });
+		expect(edited?.note.evidence.at(-1)).toMatchObject({ s: `comment:${comments[0].id}`, e: [], kind: "reviewer" });
+		expect(after.waitingComments).toBe(0);
 		expect(after.comments.map((c) => [!!c.processedRun, c.unhandled])).toEqual([[true, undefined], [true, undefined], [true, "не про память"]]);
 		// nothing left to apply: the next comments-only pass is a no-op
 		expect((await run(new Script(), "review")).out.status).toBe("noop");
 	});
 
 	it("leaves alone what the user turned off, and a dry run writes nothing", async () => {
-		await app.reviews.accept(reviewId, undefined, undefined, "test");
-		expect(await app.reviews.view()).toBeNull();
+		const accepted = await app.reviews.accept({ all: true }, "test");
+		expect([accepted.pending, accepted.runInfos.length]).toEqual([0, 0]);
 		const notes = await app.mem.notes();
 		expect(notes.length).toBe(3);
 		const lint = notes.find((n) => n.title === "Линтер перед коммитом") as { id: string };
@@ -232,7 +233,7 @@ describe("a dream", () => {
 		const curator = JSON.parse(llm.calls.find((c) => c.stage === "analyze")?.user ?? "{}");
 		expect(curator.notes.project.find((n: { id: string }) => n.id === lint.id)?.off).toBe(true);
 		expect(out.status).toBe("noop");
-		expect(await app.reviews.view()).toBeNull();
+		expect((await app.reviews.view()).pending).toBe(0);
 		const report = (await app.state.run(id))?.report;
 		expect(report?.rejected.some((r) => r.reason.includes("turned off"))).toBe(true);
 	});

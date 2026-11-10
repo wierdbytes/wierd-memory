@@ -15,12 +15,14 @@
  *     .local/                   not in git — what goes on around memory:
  *       state.json              which sessions dreams have read, inbox statuses, rejected titles, votes
  *       inbox/<day>.jsonl       things kept for the next dream (append-only)
- *       reviews/<id>.json       a review: its branch, the decisions made in it, comments, AGENTS.md proposals
+ *       review.json             the review: the commit of the approved branch the dreams branch is in step
+ *                               with, the dreams whose proposals are pending, comments, AGENTS.md proposals
+ *       decisions.jsonl         every accept / reject (append-only)
  *       runs/<run>/             a dream: run.json, report.json, what the models saw and said
  *       logs/<run>.log          a dream's log
  *       digests/<project>/<session>.txt   session digests — the search corpus (rebuilt by dreams)
  *       cards/<session>.json    session cards (cache of the cheap-model pass)
- *       worktrees/<review>/     the review branch, checked out
+ *       worktrees/<dreams>/     the dreams branch (`memory.reviewBranch`), checked out
  * ```
  */
 
@@ -72,7 +74,10 @@ export interface HomePaths {
 	local: string;
 	state: string;
 	inbox: string;
-	reviews: string;
+	/** `review.json`. */
+	review: string;
+	/** `decisions.jsonl`. */
+	decisions: string;
 	runs: string;
 	dreamLogs: string;
 	digests: string;
@@ -98,7 +103,8 @@ export function homePaths(home: string = wmemHome(), memoryDir?: string): HomePa
 		local,
 		state: join(local, "state.json"),
 		inbox: join(local, "inbox"),
-		reviews: join(local, "reviews"),
+		review: join(local, "review.json"),
+		decisions: join(local, "decisions.jsonl"),
 		runs: join(local, "runs"),
 		dreamLogs: join(local, "logs"),
 		digests: join(local, "digests"),

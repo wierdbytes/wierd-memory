@@ -56,6 +56,7 @@ export const EVIDENCE_KIND: Record<string, string> = {
 	observed: "observed in the session",
 	inbox: "from the inbox",
 	reviewer: "a review comment",
+	edited: "edited before accepting",
 	manual: "a hand edit",
 };
 

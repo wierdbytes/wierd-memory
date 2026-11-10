@@ -3,7 +3,7 @@
  * applied by plain code to an in-memory copy of the notes — item by item,
  * never rewritten wholesale, so memory cannot "collapse" into a short generic
  * summary. What changed is then sent to the server, which writes it to the
- * review branch.
+ * dreams branch.
  *
  * Invariants: every note keeps its evidence; superseded and deprecated notes
  * stay with `validUntil`; near-duplicates are merged into the existing note;
@@ -244,7 +244,7 @@ export interface SkillDraft {
 export interface WorkspaceChanges {
 	/** Notes written by this run, with the version the run started from (absent: new). */
 	notes: Array<{ before?: Note; after: Note }>;
-	/** Notes dropped from the open review (they were never approved). */
+	/** Proposed notes dropped again (they were never approved). */
 	removed: Note[];
 	/** Project scopes that got their first note. */
 	scopes: ScopeMeta[];
@@ -254,7 +254,7 @@ export interface WorkspaceChanges {
 export class Workspace {
 	readonly notes = new Map<string, Note[]>();
 	readonly ids = new Set<string>();
-	/** Notes that exist only in the open review (not approved yet). */
+	/** Notes that exist only on the dreams branch (proposed, not approved yet). */
 	readonly pending = new Set<string>();
 	readonly skills = new Map<string, SkillDraft>();
 	private original = new Map<string, Note>();
@@ -328,7 +328,7 @@ export class Workspace {
 		this.dirty.add(n);
 	}
 
-	/** Drop a note that was never approved (it only exists in the open review). */
+	/** Drop a note that was never approved (it only exists on the dreams branch). */
 	removeNote(n: Note): void {
 		const list = this.scope(n.scope);
 		const i = list.indexOf(n);

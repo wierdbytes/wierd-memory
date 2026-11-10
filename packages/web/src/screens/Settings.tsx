@@ -135,7 +135,7 @@ export function SettingsScreen() {
 
 			<Group title="Git repository">
 				<p className="dim">
-					Memory is a git repository: notes are Markdown files, every change is a commit. The folder and the approved branch are set in config.json (<code>memory.dir</code>, <code>memory.branch</code>) and apply after a restart.
+					Memory is a git repository: notes are Markdown files, every change is a commit. Approved memory is the branch <code>{draft.memory.branch}</code>; what dreams propose waits on <code>{draft.memory.reviewBranch}</code> until you decide. The folder and the branches are set in config.json (<code>memory.dir</code>, <code>memory.branch</code>, <code>memory.reviewBranch</code>) and apply after a restart.
 				</p>
 				<Field label="Remote" hint="the name of the git remote to exchange with (origin); empty: none">
 					<input type="text" className="mono" value={draft.memory.remote} onChange={(ev) => set("memory", { ...draft.memory, remote: ev.target.value.trim() })} placeholder="none" />
@@ -257,7 +257,7 @@ function Num({ label, hint, value, min, max, onChange }: { label: string; hint?:
 const PROMPT_INFO: Record<string, { label: string; hint: string }> = {
 	cards: { label: "Session cards", hint: "Summarizes one session into a card: what happened and what is worth remembering." },
 	curator: { label: "Curator", hint: "Turns the cards, the inbox and the current notes into proposed changes." },
-	review: { label: "Review comments", hint: "Applies the comments you leave in a review." },
+	review: { label: "Review comments", hint: "Applies the comments you leave in Review." },
 	verify: { label: "Fact check", hint: "Tests every proposed change against the session lines it cites." },
 	project_charter: { label: "Default purpose of project memory", hint: "The charter of every project scope that has none of its own (a scope's own charter is edited in Memory)." },
 };

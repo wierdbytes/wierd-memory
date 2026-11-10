@@ -12,7 +12,7 @@ The review is not a GitHub pull request, which can only be merged whole: the ser
 note, and GitHub is where the repository is backed up and can be looked at.
 
 ```
- pi sessions ──► dream (headless pi: cards → curator → fact check) ──► review/<id> branch ──► you ──► approved branch
+ pi sessions ──► dream (headless pi: cards → curator → fact check) ──► dreams branch ──► you ──► approved branch
       ▲                                                                   accept · edit · reject          │
       └────────── <memory> index, memory_search / memory_read ◄────────── approved memory ◄───────────────┘
 ```
@@ -24,7 +24,7 @@ note, and GitHub is where the repository is backed up and can be looked at.
 | `packages/server` | `wmem serve`: the HTTP API and the web UI on `127.0.0.1:7433`, everything that writes to the repository, the dream schedule. Also the `wmem` CLI (a client of that API). |
 | `packages/web` | The web UI: Review, Memory, Inbox, Dreams, History, Settings. |
 | `packages/pi` | The pi extension: memory injection, `memory_search` / `memory_read` / `memory_inbox`, `/dream`, `/memory`, `/remember`, and the dream runner the server starts. |
-| `packages/herdr-mod` | The Herdr app panel: memory of the focused pane's project, the open review, hand edits. |
+| `packages/herdr-mod` | The Herdr app panel: memory of the focused pane's project, what waits for review, hand edits. |
 | `packages/core` | What they share: the note model, the index, search, the curator's operations, diff / three-way merge, API types. |
 | `~/.wierd-memory/` | `config.json`, `logs/`, and `memory/` — the git repository. |
 
@@ -66,11 +66,13 @@ source): `pi install /path/to/wierd-memory/packages/pi`.
   .local/                         not in git:
     state.json                    which sessions dreams have read, inbox statuses, rejected titles, votes
     inbox/<day>.jsonl             things kept for the next dream (append-only)
-    reviews/<id>.json             a review: its branch, every decision, comments, AGENTS.md proposals
+    review.json                   the review: which approved commit the dreams branch is in step with, the dreams
+                                  whose proposals are pending, comments for dreams, AGENTS.md proposals
+    decisions.jsonl               every accept / reject (append-only)
     runs/<run>/                   a dream: run.json, report.json, what the models saw and said
     logs/<run>.log                a dream's log
     digests/, cards/              the search corpus of past sessions, and the cheap-model cache
-    worktrees/<review>/           the review branch, checked out
+    worktrees/dreams/             the dreams branch, checked out
 ```
 
 A note:
@@ -100,29 +102,30 @@ ever rewrites it.
 
 ### Review
 
-A dream commits its changes to a branch **`review/<id>`** off the approved one. While a review is open, later
-dreams add to it. The items you see are the difference between the two branches, note by note — so the list is
-always exactly what accepting would change:
+Dreams commit their changes to one branch, **`dreams`** (`memory.reviewBranch`): approved memory plus everything
+still proposed. Every dream adds to it, whenever it runs; nothing opens or closes, and you decide on any part of it
+whenever you want — what you leave stays until you get to it. The items you see are the difference between the two
+branches, note by note — so the list is always exactly what accepting would change:
 
 - **accept** — the note's file is copied to the approved branch (one commit);
-- **edit and accept** — your text goes to the review branch first, then as above; the note is marked as approved
+- **edit and accept** — your text goes to the dreams branch first, then as above; the note is marked as approved
   by you, which later dreams weigh against older evidence;
-- **reject** — the approved version is copied back to the review branch; a rejected new note is not proposed
+- **reject** — the approved version is copied back to the dreams branch; a rejected new note is not proposed
   again without new evidence;
 - **comment** — an instruction for the dream ("split this", "move it to project X"), applied by
   `wmem dream review` or the next dream.
 
-When nothing is left the review closes and its branch is deleted (on the remote too). The approved branch may
-change while a review is open (hand edits, accepted items, a pull): it is merged into the review branch — a real
-merge commit, whose content is worked out note by note and field by field rather than line by line — so the review
-branch is always "approved + what is still proposed". You can look at the same thing with git or on GitHub:
+Every decision is kept in a log (`wmem review log`). The approved branch changes too (hand edits, accepted items, a
+pull): it is merged into the dreams branch — a real merge commit, whose content is worked out note by note and field
+by field rather than line by line — so the dreams branch is always "approved + what is still proposed", and equal to
+the approved branch when nothing is left. You can look at the same thing with git or on GitHub:
 
 ```sh
-git -C ~/.wierd-memory/memory diff main...review/r-20261109-50c2
-# https://github.com/<you>/pi-memory/compare/main...review/r-20261109-50c2   (the link is in the review's header)
+git -C ~/.wierd-memory/memory diff main...dreams
+# https://github.com/<you>/pi-memory/compare/main...dreams   (the link is in the review's header)
 ```
 
-Dreams may also propose AGENTS.md / CLAUDE.md edits for a project; they wait in the same review, and accepting one
+Dreams may also propose AGENTS.md / CLAUDE.md edits for a project; they wait beside the notes, and accepting one
 applies it to the file in the working copy (nothing is committed there).
 
 ### By hand
@@ -138,19 +141,20 @@ yourself, or pull, is taken as it is.
 ### The remote
 
 With `memory.sync` on (the default when the repository has an `origin`), the server pushes the approved branch and
-the open review's branch after every change, and every ten minutes fetches the approved branch and takes in what
+the dreams branch after every change, and every ten minutes fetches the approved branch and takes in what
 the remote has — an edit made on GitHub, another machine. `wmem sync` does both now. If both sides changed the same
 lines it stops and says so in `wmem status`; merge by hand in `~/.wierd-memory/memory`.
 
 ## Every day
 
 ```sh
-wmem status                          # memory, the open review, dreams, the remote
+wmem status                          # memory, what waits for review, dreams, the remote
 wmem review                          # what waits for a decision
 wmem review accept m-1a2b3c m-4d5e6f # … or --all
 wmem review edit m-1a2b3c --title "…" --body "…"     # edit, then accept
-wmem review reject m-7a8b9c --reason "one-off"
+wmem review reject m-7a8b9c --reason "one-off"       # … or --all
 wmem review comment "move this to the herdr-app project" --note m-1a2b3c
+wmem review log                      # what was decided, newest first
 
 wmem notes --scope herdr-app         # ● always  ○ when relevant  · search only  ⊘ off
 wmem note m-1a2b3c --history         # the note, its file, its commits
@@ -189,7 +193,7 @@ pi -p --no-session --no-extensions -e <dream.childExtensions…> -e packages/pi/
 4. **Fact check** (`models.verify`): every cited entry is looked up in the raw session; an independent model checks
    each operation against those excerpts and may narrow it or move it to the right scope.
 5. **Code applies** what passed, item by item (never a rewrite), and hands the result to the server, which commits
-   it to the review branch. The report of each dream (what it proposed and why, what the check rejected, cost) is
+   it to the dreams branch. The report of each dream (what it proposed and why, what the check rejected, cost) is
    kept: `wmem dream report`, or the Dreams page.
 
 ## Settings
@@ -201,6 +205,7 @@ pi -p --no-session --no-extensions -e <dream.childExtensions…> -e packages/pi/
 | `port` | `7433` | HTTP, on 127.0.0.1 (restart to apply) |
 | `memory.dir` | `~/.wierd-memory/memory` | the git repository (restart to apply) |
 | `memory.branch` | `main` | the branch that is approved memory (restart to apply) |
+| `memory.reviewBranch` | `dreams` | the branch dreams write to: approved memory plus what is still proposed (restart to apply) |
 | `memory.remote` / `memory.sync` | `origin` / `true` | push after every change, pull every ten minutes |
 | `language` | `Russian` | language of notes |
 | `inject` | `true` | inject the approved index into sessions |
@@ -222,7 +227,7 @@ bun test                 # core; the server on real git repositories in temp dir
                          # a whole dream with scripted models
 bun run typecheck
 WMEM_HOME=/tmp/wmem-dev WMEM_PORT=17433 WMEM_DEV=1 bin/wmem serve     # a sandbox server (its own empty repository)
-WMEM_URL=http://127.0.0.1:17433 bun scripts/seed-review.ts            # a made-up review to try the UI on
+WMEM_URL=http://127.0.0.1:17433 bun scripts/seed-review.ts            # a made-up dream's proposals to try the UI on
                                                                       # (needs some notes with session evidence)
 ```
 

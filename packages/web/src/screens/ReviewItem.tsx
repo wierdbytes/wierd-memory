@@ -354,7 +354,8 @@ export function CommentForm({ busy, onSubmit, onCancel, placeholder, autoFocus }
 	);
 }
 
-export function Comments({ list, busy, onRemove }: { list: ReviewComment[]; busy: string | null; onRemove?: (c: ReviewComment) => void }) {
+/** `showNote`: name the note a comment is about (in the general list, where its card is not around: decided already). */
+export function Comments({ list, busy, onRemove, showNote }: { list: ReviewComment[]; busy: string | null; onRemove?: (c: ReviewComment) => void; showNote?: boolean }) {
 	if (!list.length) return null;
 	return (
 		<div className="comments">
@@ -364,6 +365,14 @@ export function Comments({ list, busy, onRemove }: { list: ReviewComment[]; busy
 					<div className="comment-meta">
 						<span>
 							{c.author} · {ago(c.at)}
+							{showNote && c.noteId ? (
+								<>
+									{" · on "}
+									<a className="mono" href={href("note", c.noteId)}>
+										{c.noteId}
+									</a>
+								</>
+							) : null}
 						</span>
 						{c.processedRun ? (
 							<a href={href("dreams", c.processedRun)}>{c.unhandled ? "read by a dream" : "applied by a dream"}</a>

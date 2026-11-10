@@ -1,28 +1,38 @@
 /**
- * Reviews: what dreams propose waits here until a person decides.
+ * The review: what dreams propose waits here until a person decides.
  *
- * A review is a git branch off the approved one (`review/<id>`), checked out
- * as a worktree. Dreams commit their changes to it; while it is open, later
- * dreams add to it. The items of a review are the difference between the
- * approved branch and the review branch, note by note (`diffNotes`) — so the
- * list always shows exactly what accepting would change, whoever made the
- * change: a dream, a review comment a dream applied, or the reviewer's edit.
+ * There is one branch for it, `dreams` (`memory.reviewBranch`), checked out as
+ * a worktree. It holds approved memory plus everything still proposed; dreams
+ * add to it whenever they run, and it never opens, closes or goes away. The
+ * items are the difference between the approved branch and it, note by note
+ * (`diffNotes`) — so the list always shows exactly what accepting would
+ * change, whoever made the change: a dream, a review comment a dream applied,
+ * or the reviewer's edit.
  *
- * Deciding an item:
+ * Any subset of the items can be decided at any time:
  *   accept          the branch's files are copied to the approved branch (one commit)
- *   edit and accept the reviewer's text goes to the review branch first, then as above
- *   reject          the approved branch's files are copied back to the review branch
+ *   edit and accept the reviewer's text goes to the dreams branch first, then as above
+ *   reject          the approved branch's files are copied back to the dreams branch
  * Either way the item's notes become equal on both sides and it leaves the
- * list. When nothing is left the review closes and its branch is deleted.
+ * list; what is left stays until decided. Every decision goes to
+ * `decisions.jsonl`. `ReviewItem.version` lets a client make sure it decides
+ * what it showed.
  *
- * The approved branch can change while a review is open (hand edits, accepted
- * items, a pull). `sync` merges it into the review branch — a real merge
- * commit, whose content is worked out note by note and column by column
- * (`rebaseNotes`) rather than line by line. The review branch is thus always
- * "approved + what is still proposed", locally and in `git diff` or on GitHub
- * (`<approved>...review/<id>`).
+ * The approved branch changes too (hand edits, accepted items, a pull).
+ * `sync` merges it into the dreams branch — a real merge commit, whose
+ * content is worked out note by note and column by column (`rebaseNotes`)
+ * rather than line by line. The dreams branch is thus always "approved +
+ * what is still proposed", locally and in `git diff` or on GitHub
+ * (`<approved>...dreams`).
+ *
+ * `review.json` keeps the dreams whose proposals are still pending (their
+ * reports say why an item is proposed), comments for dreams and AGENTS.md
+ * proposals.
  */
 
+import { createHash } from "node:crypto";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import {
 	type AgentsProposal,
 	applyEdits,
@@ -48,21 +58,25 @@ import {
 	rebaseNotes,
 	type ReportData,
 	type ReportItem,
+	type ReviewAccept,
 	type ReviewDecision,
 	type ReviewItem,
+	type ReviewPick,
+	type ReviewReject,
 	type ReviewSummary,
 	type ReviewView,
 	runTitle,
 	sameNote,
 	today,
 } from "@wierd-memory/core";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
 import { type App, bad, DREAM_AUTHOR, HttpError, notFound, scopeShortName, SYSTEM_AUTHOR } from "./app.ts";
-import { MAIN, REVIEW_PREFIX } from "./git.ts";
+import { MAIN } from "./git.ts";
 import type { ScopeRow, SkillRow } from "./memory.ts";
-import type { ReviewRow } from "./state.ts";
+import { renderNote } from "./notefile.ts";
 
+const DAY = 86_400_000;
+/** How long decided AGENTS.md proposals and applied comments stay in the view. */
+const KEEP_SHOWING = 14 * DAY;
 const KIND_ORDER: ItemKind[] = ["added", "superseded", "updated", "moved", "deprecated", "removed", "skill", "confirmed"];
 const INDEX_ORDER: Record<string, number> = { always: 0, pointer: 1, none: 2 };
 /** The note stays in memory after this change, so its text matters. */
@@ -70,43 +84,56 @@ const lives = (k: ItemKind) => k === "added" || k === "updated" || k === "moved"
 
 const skillKey = (s: { scope: string; name: string }) => `skill:${s.scope}/${s.name}`;
 const sameSkill = (a?: SkillRow, b?: SkillRow) => (!a || !b ? a === b : a.description === b.description && a.body.trim() === b.body.trim());
+const hash = (v: unknown) => createHash("sha1").update(JSON.stringify(v)).digest("hex").slice(0, 12);
+const clip = (s: string, n = 60) => (s.length > n ? `${s.slice(0, n)}…` : s);
 
-function newReviewId(): string {
-	const d = new Date();
-	const p = (n: number) => String(n).padStart(2, "0");
-	return `r-${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${Math.random().toString(16).slice(2, 6).padEnd(4, "0")}`;
+interface SkillDiff {
+	key: string;
+	main?: SkillRow;
+	branch?: SkillRow;
 }
 
 interface Computed {
 	main: Note[];
 	branch: Note[];
+	mainById: Map<string, Note>;
+	branchById: Map<string, Note>;
 	diffs: NoteDiff[];
-	skillsMain: SkillRow[];
-	skillsBranch: SkillRow[];
 	/** Skills that differ: the branch's version, or the main one when the branch dropped it. */
-	skillDiffs: Array<{ key: string; main?: SkillRow; branch?: SkillRow }>;
+	skillDiffs: SkillDiff[];
 }
 
 export class Reviews {
 	constructor(private app: App) {}
 
+	/** The branch dreams write to. */
+	get branch(): string {
+		return this.app.reviewBranch;
+	}
+
 	// ── keeping the branch in step with main ─────────────────────────────
 
-	/** Merge what the approved branch changed since the review branch last saw it into the review branch. */
-	async sync(r: ReviewRow): Promise<void> {
+	/** Merge what the approved branch changed since the dreams branch last saw it into the dreams branch. */
+	async sync(): Promise<void> {
 		const { repo, mem, state } = this.app;
+		const branch = this.branch;
 		const head = await repo.head(MAIN);
-		if (r.baseCommit === head) return;
-		const base = r.baseCommit ? await mem.notesAt(r.baseCommit) : await mem.notes(MAIN);
-		const [main, branch] = await Promise.all([mem.notes(MAIN), mem.notes(r.branch)]);
-		const rb = rebaseNotes(base, main, branch);
-		const [skillsBase, skillsMain, skillsBranch] = await Promise.all([r.baseCommit ? mem.skillsAt(r.baseCommit) : mem.skills(MAIN), mem.skills(MAIN), mem.skills(r.branch)]);
-		// The merge keeps the review branch's files; what it should take from the approved branch is written below.
-		await repo.beginMerge(r.branch, head);
-		await mem.takeShared(r.branch, head);
-		await mem.upsert(r.branch, rb.upsert, { like: MAIN });
-		await mem.remove(r.branch, rb.remove);
-		// Skills: whole files. One the review does not propose a change to follows the approved branch.
+		const known = await state.baseCommit();
+		if (known === head) return;
+		// No record (a fresh `.local`): the branches' common ancestor is what the dreams branch last took in.
+		const baseCommit = known ?? (await repo.mergeBase(MAIN, branch));
+		if (baseCommit === head) return void (await state.setBaseCommit(head));
+		const base = baseCommit ? await mem.notesAt(baseCommit) : await mem.notes(MAIN);
+		const [main, current] = await Promise.all([mem.notes(MAIN), mem.notes(branch)]);
+		const rb = rebaseNotes(base, main, current);
+		const [skillsBase, skillsMain, skillsBranch] = await Promise.all([baseCommit ? mem.skillsAt(baseCommit) : mem.skills(MAIN), mem.skills(MAIN), mem.skills(branch)]);
+		// The merge keeps the dreams branch's files; what it should take from the approved branch is written below.
+		await repo.beginMerge(branch, head);
+		await mem.takeShared(branch, head);
+		await mem.upsert(branch, rb.upsert, { like: MAIN });
+		await mem.remove(branch, rb.remove);
+		await mem.copyFiles(branch, MAIN);
+		// Skills: whole files. One that nothing proposes a change to follows the approved branch.
 		const by = (list: SkillRow[]) => new Map(list.map((s) => [skillKey(s), s]));
 		const [sb, sm, sbr] = [by(skillsBase), by(skillsMain), by(skillsBranch)];
 		for (const key of new Set([...sb.keys(), ...sm.keys()])) {
@@ -115,28 +142,87 @@ export class Reviews {
 			const touched = sb.has(key) !== sbr.has(key) || !sameSkill(sb.get(key), cur);
 			if (touched) continue;
 			const next = sm.get(key);
-			if (next) await mem.upsertSkill(r.branch, next);
-			else if (cur) await mem.removeSkill(r.branch, cur.scope, cur.name);
+			if (next) await mem.upsertSkill(branch, next);
+			else if (cur) await mem.removeSkill(branch, cur.scope, cur.name);
 		}
-		await repo.commit(r.branch, `in step with ${repo.branch} ${head.slice(0, 8)}`, SYSTEM_AUTHOR);
-		r.baseCommit = head;
-		await state.saveReview(r);
+		await repo.commit(branch, `in step with ${repo.branch} ${head.slice(0, 8)}`, SYSTEM_AUTHOR);
+		await state.setBaseCommit(head);
+		await this.pruneRuns();
 		this.app.pushSoon();
 	}
 
-	// ── what a review holds ──────────────────────────────────────────────
+	// ── what waits for a decision ────────────────────────────────────────
 
-	private async compute(r: ReviewRow): Promise<Computed> {
+	private async compute(): Promise<Computed> {
 		const { mem } = this.app;
-		const [main, branch, skillsMain, skillsBranch] = await Promise.all([this.app.notes(MAIN), this.app.notes(r.branch), mem.skills(MAIN), mem.skills(r.branch)]);
+		const [main, branch, skillsMain, skillsBranch] = await Promise.all([this.app.notes(MAIN), this.app.notes(this.branch), mem.skills(MAIN), mem.skills(this.branch)]);
 		const sm = new Map(skillsMain.map((s) => [skillKey(s), s]));
 		const sb = new Map(skillsBranch.map((s) => [skillKey(s), s]));
-		const skillDiffs: Computed["skillDiffs"] = [];
+		const skillDiffs: SkillDiff[] = [];
 		for (const key of new Set([...sm.keys(), ...sb.keys()])) {
 			if (sm.has(key) && sb.has(key) && sameSkill(sm.get(key), sb.get(key))) continue;
 			skillDiffs.push({ key, main: sm.get(key), branch: sb.get(key) });
 		}
-		return { main, branch, diffs: diffNotes(main, branch), skillsMain, skillsBranch, skillDiffs };
+		return { main, branch, mainById: new Map(main.map((n) => [n.id, n])), branchById: new Map(branch.map((n) => [n.id, n])), diffs: diffNotes(main, branch), skillDiffs };
+	}
+
+	/** What deciding a note item would change: every note it covers, on both branches (the file's canonical form). */
+	private noteVersion(c: Computed, ids: readonly string[]): string {
+		const at = (n: Note | undefined) => (n ? renderNote(n) : null);
+		return hash([...ids].sort().map((id) => [id, at(c.branchById.get(id)), at(c.mainById.get(id))]));
+	}
+
+	private skillVersion(s: SkillDiff): string {
+		const at = (x?: SkillRow) => (x ? { description: x.description, body: x.body.trim() } : null);
+		return hash([s.key, at(s.branch), at(s.main)]);
+	}
+
+	private versions(c: Computed): Map<string, { version: string; title: string }> {
+		const out = new Map<string, { version: string; title: string }>();
+		for (const d of c.diffs) out.set(diffKey(d), { version: this.noteVersion(c, d.ids), title: d.note.title });
+		for (const s of c.skillDiffs) {
+			const cur = s.branch ?? s.main;
+			out.set(s.key, { version: this.skillVersion(s), title: cur ? `${cur.name}: ${cur.description}` : s.key });
+		}
+		return out;
+	}
+
+	/** Refuse when an item the client showed changed or is gone since (nothing is decided then). */
+	private checkVersions(c: Computed, versions: ReviewPick["versions"]): void {
+		if (!versions || typeof versions !== "object") return;
+		const now = this.versions(c);
+		for (const [key, v] of Object.entries(versions)) {
+			const cur = now.get(key);
+			if (!cur) throw new HttpError(409, `${key} was decided or withdrawn since you looked`);
+			if (cur.version !== v) throw new HttpError(409, `«${clip(cur.title)}» changed since you looked — reload`);
+		}
+	}
+
+	/** The items a decision is about. */
+	private pick(c: Computed, pick: ReviewPick): { diffs: NoteDiff[]; skills: SkillDiff[] } {
+		const keys = Array.isArray(pick.keys) ? pick.keys.filter((k): k is string => typeof k === "string" && !!k) : [];
+		if (pick.all !== true && !keys.length) throw bad("say which items: keys, or all: true");
+		const wanted = pick.all === true ? undefined : new Set(keys);
+		const diffs = c.diffs.filter((d) => !wanted || wanted.has(diffKey(d)));
+		const skills = c.skillDiffs.filter((s) => !wanted || wanted.has(s.key));
+		if (wanted && !diffs.length && !skills.length) throw notFound("such item to decide (decided already?)");
+		return { diffs, skills };
+	}
+
+	/** Keep only the dreams something of which still waits: an item their reports explain, or an AGENTS.md proposal. */
+	private async pruneRuns(c?: Computed): Promise<void> {
+		const { state } = this.app;
+		const runs = await state.reviewRuns();
+		if (!runs.length) return;
+		const cc = c ?? (await this.compute());
+		const ids = new Set(cc.diffs.flatMap((d) => d.ids));
+		const skills = new Set(cc.skillDiffs.map((s) => s.key));
+		const keep = new Set((await state.agentsProposals({ status: "pending" })).map((a) => a.runId));
+		for (const rep of await state.runReports(runs)) {
+			const pending = rep.items.some((it) => (it.id && ids.has(it.id)) || (it.old?.id && ids.has(it.old.id)) || (it.kind === "skill" && skills.has(`skill:${it.scope}/${it.title.split(":")[0]}`)));
+			if (pending) keep.add(rep.runId);
+		}
+		await state.setReviewRuns(runs.filter((r) => keep.has(r)));
 	}
 
 	private scopeNames(scopes: readonly ScopeRow[], ids: Iterable<string>, reports: readonly ReportData[]): Record<string, string> {
@@ -197,6 +283,7 @@ export class Reviews {
 				newerEvidence: d.kind === "superseded" || d.kind === "deprecated" ? its.findLast((x) => x.newerEvidence?.length)?.newerEvidence : undefined,
 				remark: remarks.join(" · ") || undefined,
 				runs: [...new Set(recs.map((x) => x.run))],
+				version: this.noteVersion(c, d.ids),
 				editable: lives(kind),
 			};
 		});
@@ -218,6 +305,7 @@ export class Reviews {
 				check: rec.findLast((x) => x.it.check)?.it.check,
 				risky: findRisky(cur.body),
 				runs: [...new Set(rec.map((x) => x.run))],
+				version: this.skillVersion(s),
 				editable: false,
 				skill: { scope: cur.scope, name: cur.name, description: cur.description, body: cur.body, before: s.branch && s.main ? { description: s.main.description, body: s.main.body } : undefined },
 			});
@@ -235,64 +323,46 @@ export class Reviews {
 		);
 	}
 
-	private async agentsOf(reviewId: string, scopes: readonly ScopeRow[]): Promise<AgentsProposal[]> {
-		const list = await this.app.state.agentsProposals({ reviewId });
-		return list.map((p) => ({ ...p, projectName: scopeShortName(p.projectKey || scopes.find((s) => s.root === p.repoRoot)?.key || p.repoRoot) }));
-	}
-
-	private async summarize(r: ReviewRow, pending?: number): Promise<ReviewSummary> {
-		const counts = (await this.app.state.decisionCounts([r.id]))[r.id] ?? { accepted: 0, rejected: 0 };
-		return { id: r.id, status: r.status, title: r.title, createdAt: r.createdAt, closedAt: r.closedAt, pending: pending ?? 0, accepted: counts.accepted, rejected: counts.rejected, runs: r.runs };
-	}
-
-	/** The open review in short (for status lines), or null. */
-	async openSummary(): Promise<ReviewSummary | null> {
-		const r = await this.app.state.openReview();
-		if (!r) return null;
-		const c = await this.compute(r);
-		const agents = await this.app.state.agentsProposals({ reviewId: r.id, status: "pending" });
-		return this.summarize(r, c.diffs.length + c.skillDiffs.length + agents.length);
-	}
-
-	async list(limit = 50): Promise<ReviewSummary[]> {
-		const rows = await this.app.state.reviews(limit);
-		const counts = await this.app.state.decisionCounts(rows.map((r) => r.id));
-		const out: ReviewSummary[] = [];
-		for (const r of rows) {
-			let pending = 0;
-			if (r.status === "open") pending = (await this.openSummary())?.pending ?? 0;
-			const c = counts[r.id] ?? { accepted: 0, rejected: 0 };
-			out.push({ id: r.id, status: r.status, title: r.title, createdAt: r.createdAt, closedAt: r.closedAt, pending, accepted: c.accepted, rejected: c.rejected, runs: r.runs });
-		}
+	private counts(c: Computed): ReviewSummary["counts"] {
+		const out: ReviewSummary["counts"] = {};
+		for (const kind of [...c.diffs.map((d) => d.kind as ItemKind), ...c.skillDiffs.filter((s) => s.branch ?? s.main).map((s): ItemKind => (s.branch ? "skill" : "removed"))]) out[kind] = (out[kind] ?? 0) + 1;
 		return out;
 	}
 
-	/** A review as the reviewer sees it. `id` "open" (or none): the open one. */
-	async view(id?: string): Promise<ReviewView | null> {
+	/** What waits for a decision, in short (for status lines). */
+	async summary(): Promise<ReviewSummary> {
+		const { state } = this.app;
+		const [c, agents, comments] = await Promise.all([this.compute(), state.agentsProposals({ status: "pending" }), state.comments()]);
+		const counts = this.counts(c);
+		const items = Object.values(counts).reduce((s, n) => s + (n ?? 0), 0);
+		return { pending: items + agents.length, counts, agentsPending: agents.length, waitingComments: comments.filter((x) => !x.processedRun).length };
+	}
+
+	/** Everything that waits for a decision, as the reviewer sees it. */
+	async view(): Promise<ReviewView> {
 		const { state, mem } = this.app;
-		const r = !id || id === "open" ? await state.openReview() : await state.review(id);
-		if (!r) {
-			if (!id || id === "open") return null;
-			throw notFound(`review ${id}`);
-		}
-		const [reports, scopes, decisions, comments, runInfos] = await Promise.all([
-			state.runReports(r.runs),
+		await this.app.lock(() => this.sync());
+		const runs = await state.reviewRuns();
+		const [c, reports, scopes, recent, allComments, allAgents, runInfos] = await Promise.all([
+			this.compute(),
+			state.runReports(runs),
 			mem.scopes(MAIN),
-			state.decisions(r.id),
-			state.comments(r.id),
-			Promise.all(r.runs.map((x) => state.run(x))),
+			state.decisions(30),
+			state.comments(),
+			state.agentsProposals(),
+			Promise.all(runs.map((x) => state.run(x))),
 		]);
-		const agents = await this.agentsOf(r.id, scopes);
-		let items: ReviewItem[] = [];
-		let names = this.scopeNames(scopes, decisions.map((d) => d.scope ?? "").filter(Boolean), reports);
-		if (r.status === "open") {
-			await this.app.lock(() => this.sync(r));
-			const c = await this.compute(r);
-			// A project whose first note is still a proposal has its folder on the review branch only.
-			const proposed = (await mem.scopes(r.branch)).filter((x) => !scopes.some((y) => y.id === x.id));
-			names = this.scopeNames([...scopes, ...proposed], [...c.branch.map((n) => n.scope), ...c.main.map((n) => n.scope)], reports);
-			items = this.items(c, reports, names);
-		}
+		const since = Date.now() - KEEP_SHOWING;
+		const recently = (iso: string | undefined) => !!iso && Date.parse(iso) >= since;
+		const agents: AgentsProposal[] = allAgents
+			.filter((a) => a.status === "pending" || recently(a.decidedAt ?? a.createdAt))
+			.sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+			.map((p) => ({ ...p, projectName: scopeShortName(p.projectKey || scopes.find((s) => s.root === p.repoRoot)?.key || p.repoRoot) }));
+		const comments = allComments.filter((x) => !x.processedRun || recently(x.processedAt ?? x.at)).map(({ processedAt: _at, ...x }) => x);
+		// A project whose first note is still a proposal has its folder on the dreams branch only.
+		const proposed = (await mem.scopes(this.branch)).filter((x) => !scopes.some((y) => y.id === x.id));
+		const names = this.scopeNames([...scopes, ...proposed], [...c.branch.map((n) => n.scope), ...c.main.map((n) => n.scope), ...recent.map((d) => d.scope ?? "").filter(Boolean)], reports);
+		const items = this.items(c, reports, names);
 		const warnings: string[] = [];
 		for (const it of items) {
 			const ref = `${it.note.id ? `${it.note.id} ` : ""}«${it.note.title.slice(0, 70)}»`;
@@ -301,44 +371,47 @@ export class Reviews {
 		}
 		const last = reports[reports.length - 1];
 		for (const i of last?.indexes ?? []) if (i.dropped.length) warnings.push(`the ${names[i.scope] ?? i.scope} index is over its token budget — search only: ${i.dropped.length}`);
-		for (const c of comments) if (c.unhandled) warnings.push(`a comment was not applied: ${c.unhandled}`);
+		for (const x of comments) if (x.unhandled) warnings.push(`a comment was not applied: ${x.unhandled}`);
 		for (const a of agents) if (a.status === "failed") warnings.push(`${a.projectName} ${a.rel}: the edit did not apply — ${a.error ?? ""}`);
 		const counts: ReviewView["counts"] = {};
 		for (const it of items) counts[it.kind] = (counts[it.kind] ?? 0) + 1;
-		const pendingAgents = agents.filter((a) => a.status === "pending").length;
+		const agentsPending = agents.filter((a) => a.status === "pending").length;
 		return {
-			...(await this.summarize(r, items.length + pendingAgents)),
-			branch: r.branch,
+			pending: items.length + agentsPending,
+			counts,
+			agentsPending,
+			waitingComments: allComments.filter((x) => !x.processedRun).length,
+			branch: this.branch,
 			items,
-			decisions,
-			comments,
 			agents,
+			comments,
+			recent,
 			rejectedByCheck: reports.flatMap((rep) => rep.rejected.map((x) => ({ ...x, run: rep.runId }))),
 			warnings,
-			runInfos: runInfos.filter((x): x is NonNullable<typeof x> => !!x).map(({ report: _report, opts: _opts, ...info }) => info),
+			runInfos: runInfos
+				.filter((x): x is NonNullable<typeof x> => !!x)
+				.map(({ report: _report, opts: _opts, ...info }) => info)
+				.sort((a, b) => b.startedAt.localeCompare(a.startedAt) || b.id.localeCompare(a.id)),
 			sessionTitles: Object.assign({}, ...reports.map((rep) => rep.sessionTitles ?? {})),
 			scopeNames: names,
-			counts,
-			compareUrl: r.status === "open" ? this.compareUrl(r.branch) : undefined,
+			compareUrl: this.compareUrl(),
 		};
 	}
 
 	/** Where GitHub shows the same difference (when the remote is GitHub). */
-	private compareUrl(branch: string): string | undefined {
+	private compareUrl(): string | undefined {
 		const m = /github\.com[:/]+([^/\s]+)\/([^/\s]+?)(?:\.git)?\/?$/.exec(this.app.remote.url ?? "");
-		return m ? `https://github.com/${m[1]}/${m[2]}/compare/${this.app.repo.branch}...${branch}` : undefined;
+		return m ? `https://github.com/${m[1]}/${m[2]}/compare/${this.app.repo.branch}...${this.branch}` : undefined;
+	}
+
+	/** The decision log, newest first. */
+	decisions(limit = 100): Promise<ReviewDecision[]> {
+		return this.app.state.decisions(limit);
 	}
 
 	// ── deciding ─────────────────────────────────────────────────────────
 
-	private async openById(id: string): Promise<ReviewRow> {
-		const r = await this.app.state.review(id === "open" ? ((await this.app.state.openReview())?.id ?? "") : id);
-		if (!r) throw notFound(`review ${id}`);
-		if (r.status !== "open") throw new HttpError(409, `review ${r.id} is ${r.status}`);
-		return r;
-	}
-
-	private applyEdit(n: Note, edit: NoteEdit, reviewId: string): Note {
+	private applyEdit(n: Note, edit: NoteEdit): Note {
 		const out: Note = { ...n, evidence: [...n.evidence] };
 		if (typeof edit.title === "string" && edit.title.trim()) out.title = edit.title.trim();
 		if (typeof edit.body === "string") out.body = edit.body.trim();
@@ -348,51 +421,50 @@ export class Reviews {
 		if (typeof edit.scope === "string" && edit.scope) out.scope = edit.scope;
 		if (sameNote(n, out)) return n;
 		out.updated = today();
-		const mark = `review:${reviewId}`;
-		if (!out.evidence.some((e) => e.s === mark && !e.e.length)) out.evidence.push({ s: mark, e: [], date: today(), at: isoMinute(Date.now()), kind: "reviewer" });
+		// The reviewer's own word, as of now (dreams weigh it against older evidence).
+		out.evidence = [...out.evidence.filter((e) => e.s !== "review"), { s: "review", e: [], date: today(), at: isoMinute(Date.now()), kind: "reviewer" }];
 		return out;
 	}
 
 	/**
-	 * Accept items: their rows on the branch become approved memory. `edit`
-	 * (one item only) changes the proposed text first.
+	 * Accept items: their rows on the dreams branch become approved memory.
+	 * `edit` (one item only) changes the proposed text first.
 	 */
-	accept(reviewId: string, keys: readonly string[] | undefined, edit: NoteEdit | undefined, actor = ""): Promise<ReviewView | null> {
+	accept(pick: ReviewAccept, actor = ""): Promise<ReviewView> {
 		return this.app
 			.lock(async () => {
 				const { mem, repo, state } = this.app;
-				const r = await this.openById(reviewId);
-				await this.sync(r);
-				let c = await this.compute(r);
-				const wanted = keys ? new Set(keys) : undefined;
-				let picked = c.diffs.filter((d) => !wanted || wanted.has(diffKey(d)));
-				const skills = c.skillDiffs.filter((s) => !wanted || wanted.has(s.key));
-				if (wanted && !picked.length && !skills.length) throw notFound("such item in the review (already decided?)");
-				const edited = new Set<string>();
-				if (edit && Object.keys(edit).length) {
-					if (picked.length !== 1) throw bad("an edit applies to exactly one item");
+				const branch = this.branch;
+				await this.sync();
+				let c = await this.compute();
+				this.checkVersions(c, pick.versions);
+				let { diffs: picked, skills } = this.pick(c, pick);
+				const edit = pick.edit && typeof pick.edit === "object" && Object.keys(pick.edit).length ? pick.edit : undefined;
+				let edited = false;
+				if (edit) {
+					if (picked.length !== 1 || skills.length) throw bad("an edit applies to exactly one item");
 					const d = picked[0];
 					if (!lives(d.kind)) throw bad(`a ${d.kind} item has no text to edit`);
 					if (edit.scope && edit.scope !== d.note.scope) {
 						if (edit.scope !== GLOBAL_SCOPE && !/^projects\/[A-Za-z0-9._-]+$/.test(edit.scope)) throw bad(`bad scope "${edit.scope}"`);
 						await mem.ensureScope(MAIN, { id: edit.scope, key: keyOfScope(edit.scope) });
 					}
-					const next = this.applyEdit(d.note, edit, r.id);
+					const next = this.applyEdit(d.note, edit);
 					if (next !== d.note) {
-						await mem.upsert(r.branch, [next], { like: MAIN });
-						await repo.commit(r.branch, `review ${r.id}: edit ${next.id} by hand`, this.app.identity);
-						edited.add(diffKey(d));
-						c = await this.compute(r);
+						await mem.upsert(branch, [next], { like: MAIN });
+						await repo.commit(branch, `edit ${next.id} before accepting it`, this.app.identity);
+						edited = true;
+						c = await this.compute();
 						picked = c.diffs.filter((x) => x.ids.includes(next.id));
 					}
 				}
-				const branchById = new Map(c.branch.map((n) => [n.id, n]));
+				if (!picked.length && !skills.length) return; // `all` with nothing left
 				const scopesNeeded = new Set<string>();
 				const upsert: Note[] = [];
 				const remove: string[] = [];
 				for (const d of picked)
 					for (const id of d.ids) {
-						const n = branchById.get(id);
+						const n = c.branchById.get(id);
 						if (n) {
 							upsert.push(n);
 							scopesNeeded.add(n.scope);
@@ -400,133 +472,100 @@ export class Reviews {
 					}
 				// A project's folder (its scope.json) comes along with its first accepted note.
 				const known = new Set((await mem.scopes(MAIN)).map((s) => s.id));
-				const proposed = await mem.scopes(r.branch);
+				const proposed = await mem.scopes(branch);
 				for (const scope of scopesNeeded) {
 					if (known.has(scope)) continue;
 					const meta = proposed.find((x) => x.id === scope);
 					await mem.ensureScope(MAIN, { id: scope, key: meta?.key ?? keyOfScope(scope), root: meta?.root });
 				}
-				await mem.upsert(MAIN, upsert, { like: r.branch });
+				await mem.upsert(MAIN, upsert, { like: branch });
 				await mem.remove(MAIN, remove);
+				await mem.copyFiles(MAIN, branch, upsert.map((n) => n.id));
 				for (const s of skills) {
 					if (s.branch) await mem.upsertSkill(MAIN, s.branch);
 					else if (s.main) await mem.removeSkill(MAIN, s.main.scope, s.main.name);
 				}
 				const total = picked.length + skills.length;
 				const lines = [...picked.map((d) => `${d.kind} ${d.note.id}: ${d.note.title}`), ...skills.map((s) => `skill ${s.key.slice(6)}`)];
-				const message = total === 1 ? `accept ${lines[0]}\n\nreview ${r.id}` : `accept ${total} changes (${countsLabel([...picked, ...skills.map(() => ({ kind: "skill" }))])})\n\nreview ${r.id}\n${lines.map((l) => `- ${l}`).join("\n")}`;
-				await repo.commit(MAIN, actor ? `${message}\nvia ${actor}` : message, this.app.identity);
+				const message = total === 1 ? `accept ${lines[0]}` : `accept ${total} changes (${countsLabel([...picked, ...skills.map(() => ({ kind: "skill" }))])})\n\n${lines.map((l) => `- ${l}`).join("\n")}`;
+				await repo.commit(MAIN, actor ? `${message}\n\nvia ${actor}` : message, this.app.identity);
 				const at = new Date().toISOString();
-				for (const d of picked) {
-					const key = diffKey(d);
-					await state.addDecision(r.id, { key, kind: d.kind, noteId: d.note.id, title: d.note.title, scope: d.note.scope, decision: edited.has(key) || (edit && picked.length === 1 && edited.size) ? "edited" : "accepted", at, by: actor || "user" });
-				}
-				for (const s of skills) await state.addDecision(r.id, { key: s.key, kind: "skill", title: s.key.slice(6), scope: (s.branch ?? s.main)?.scope, decision: "accepted", at, by: actor || "user" });
-				await this.finishIfDone(r);
-				// Brings what is left of the review in step with the new commit, and pushes.
+				const by = actor || "user";
+				await state.addDecisions([
+					...picked.map((d): ReviewDecision => ({ key: diffKey(d), kind: d.kind, noteId: d.note.id, title: d.note.title, scope: d.note.scope, decision: edited ? "edited" : "accepted", at, by })),
+					...skills.map((s): ReviewDecision => ({ key: s.key, kind: "skill", title: s.key.slice(6), scope: (s.branch ?? s.main)?.scope, decision: "accepted", at, by })),
+				]);
+				// Brings what is left on the dreams branch in step with the new commit, and pushes.
 				await this.app.afterMainChange();
-				return r.id;
+				await this.pruneRuns();
 			})
-			.then((id) => this.viewAfter(id));
+			.then(() => this.view());
 	}
 
-	/** Reject items: the branch takes `main`'s rows back. Their titles are not proposed again without new evidence. */
-	reject(reviewId: string, keys: readonly string[] | undefined, reason: string | undefined, actor = ""): Promise<ReviewView | null> {
+	/** Reject items: the dreams branch takes the approved rows back. Their titles are not proposed again without new evidence. */
+	reject(pick: ReviewReject, actor = ""): Promise<ReviewView> {
 		return this.app
 			.lock(async () => {
 				const { mem, repo, state } = this.app;
-				const r = await this.openById(reviewId);
-				await this.sync(r);
-				const c = await this.compute(r);
-				const wanted = keys ? new Set(keys) : undefined;
-				const picked = c.diffs.filter((d) => !wanted || wanted.has(diffKey(d)));
-				const skills = c.skillDiffs.filter((s) => !wanted || wanted.has(s.key));
-				if (wanted && !picked.length && !skills.length) throw notFound("such item in the review (already decided?)");
-				const mainById = new Map(c.main.map((n) => [n.id, n]));
+				const branch = this.branch;
+				await this.sync();
+				const c = await this.compute();
+				this.checkVersions(c, pick.versions);
+				const { diffs: picked, skills } = this.pick(c, pick);
+				if (!picked.length && !skills.length) return;
+				const reason = typeof pick.reason === "string" && pick.reason.trim() ? pick.reason.trim() : undefined;
 				const upsert: Note[] = [];
 				const remove: string[] = [];
 				for (const d of picked)
 					for (const id of d.ids) {
-						const n = mainById.get(id);
+						const n = c.mainById.get(id);
 						if (n) upsert.push(n);
 						else remove.push(id);
 					}
-				await mem.upsert(r.branch, upsert, { like: MAIN });
-				await mem.remove(r.branch, remove);
+				await mem.upsert(branch, upsert, { like: MAIN });
+				await mem.remove(branch, remove);
+				await mem.copyFiles(branch, MAIN, upsert.map((n) => n.id));
 				for (const s of skills) {
-					if (s.main) await mem.upsertSkill(r.branch, s.main);
-					else if (s.branch) await mem.removeSkill(r.branch, s.branch.scope, s.branch.name);
+					if (s.main) await mem.upsertSkill(branch, s.main);
+					else if (s.branch) await mem.removeSkill(branch, s.branch.scope, s.branch.name);
 				}
 				const lines = [...picked.map((d) => `${d.kind} ${d.note.id}: ${d.note.title}`), ...skills.map((s) => `skill ${s.key.slice(6)}`)];
-				await repo.commit(r.branch, `review ${r.id}: reject ${lines.length === 1 ? lines[0] : `${lines.length} changes\n\n${lines.map((l) => `- ${l}`).join("\n")}`}`, this.app.identity);
+				const message = `reject ${lines.length === 1 ? lines[0] : `${lines.length} changes\n\n${lines.map((l) => `- ${l}`).join("\n")}`}${reason ? `\n\n${reason}` : ""}`;
+				await repo.commit(branch, actor ? `${message}\n\nvia ${actor}` : message, this.app.identity);
 				const at = new Date().toISOString();
-				for (const d of picked) {
-					await state.addDecision(r.id, { key: diffKey(d), kind: d.kind, noteId: d.note.id, title: d.note.title, scope: d.note.scope, decision: "rejected", at, by: actor || "user", reason });
-					if (d.kind === "added" || d.kind === "superseded") await state.addRejection(d.note.title, r.id, d.note.id);
-				}
-				for (const s of skills) await state.addDecision(r.id, { key: s.key, kind: "skill", title: s.key.slice(6), scope: (s.branch ?? s.main)?.scope, decision: "rejected", at, by: actor || "user", reason });
-				await this.finishIfDone(r);
+				const by = actor || "user";
+				await state.addDecisions([
+					...picked.map((d): ReviewDecision => ({ key: diffKey(d), kind: d.kind, noteId: d.note.id, title: d.note.title, scope: d.note.scope, decision: "rejected", at, by, ...(reason ? { reason } : {}) })),
+					...skills.map((s): ReviewDecision => ({ key: s.key, kind: "skill", title: s.key.slice(6), scope: (s.branch ?? s.main)?.scope, decision: "rejected", at, by, ...(reason ? { reason } : {}) })),
+				]);
+				for (const d of picked) if (d.kind === "added" || d.kind === "superseded") await state.addRejection(d.note.title, d.note.id);
+				await this.pruneRuns();
 				this.app.bump("review");
 				this.app.pushSoon();
-				return r.id;
 			})
-			.then((id) => this.viewAfter(id));
+			.then(() => this.view());
 	}
 
-	private async viewAfter(id: string): Promise<ReviewView | null> {
-		return this.view(id);
-	}
+	// ── comments for dreams ──────────────────────────────────────────────
 
-	/** Close the review once nothing is left to decide. */
-	private async finishIfDone(r: ReviewRow): Promise<boolean> {
-		const { state, repo } = this.app;
-		const c = await this.compute(r);
-		if (c.diffs.length || c.skillDiffs.length) return false;
-		if ((await state.agentsProposals({ reviewId: r.id, status: "pending" })).length) return false;
-		const decisions = await state.decisions(r.id);
-		const applied = (await state.agentsProposals({ reviewId: r.id })).some((a) => a.status === "applied");
-		r.status = decisions.some((d) => d.decision !== "rejected") || applied ? "merged" : "closed";
-		r.closedAt = new Date().toISOString();
-		await state.saveReview(r);
-		try {
-			await repo.deleteBranch(r.branch);
-			this.app.mem.invalidate(r.branch);
-			this.app.pushSoon();
-		} catch (err) {
-			this.app.log(`review ${r.id}: could not delete branch ${r.branch}: ${err instanceof Error ? err.message : err}`);
-		}
-		return true;
-	}
-
-	/** Close the open review whatever is left in it: everything undecided counts as rejected. */
-	async close(reviewId: string, actor = ""): Promise<ReviewView | null> {
-		const r = await this.openById(reviewId);
-		await this.reject(r.id, undefined, "review closed", actor).catch((err) => {
-			if (!(err instanceof HttpError) || err.status !== 404) throw err;
-		});
+	async comment(body: string, noteId: string | undefined, actor = ""): Promise<ReviewView> {
+		if (!body.trim()) throw bad("an empty comment");
 		await this.app.lock(async () => {
-			for (const a of await this.app.state.agentsProposals({ reviewId: r.id, status: "pending" })) await this.app.state.updateAgentsProposal(a.id, { status: "rejected" });
-			const fresh = await this.app.state.review(r.id);
-			if (fresh?.status === "open") await this.finishIfDone(fresh);
+			await this.app.state.addComment(body.trim(), actor || "user", noteId);
 			this.app.bump("review");
 		});
-		return this.view(r.id);
+		return this.view();
 	}
 
-	// ── comments for the next dream ──────────────────────────────────────
-
-	async comment(reviewId: string, body: string, noteId: string | undefined, actor = ""): Promise<ReviewView | null> {
-		const r = await this.openById(reviewId);
-		if (!body.trim()) throw bad("an empty comment");
-		await this.app.state.addComment(r.id, body.trim(), actor || "user", noteId);
-		this.app.bump("review");
-		return this.view(r.id);
-	}
-
-	async removeComment(reviewId: string, commentId: string): Promise<ReviewView | null> {
-		await this.app.state.removeComment(commentId);
-		this.app.bump("review");
-		return this.view(reviewId);
+	/** Remove a comment no dream has applied yet. */
+	async removeComment(commentId: string): Promise<ReviewView> {
+		await this.app.lock(async () => {
+			const res = await this.app.state.removeComment(commentId);
+			if (res === "gone") throw notFound(`comment ${commentId}`);
+			if (res === "applied") throw new HttpError(409, `a dream has applied comment ${commentId} already`);
+			this.app.bump("review");
+		});
+		return this.view();
 	}
 
 	// ── AGENTS.md proposals ──────────────────────────────────────────────
@@ -552,10 +591,7 @@ export class Reviews {
 			}
 			if (res.content !== before) writeFileSync(file, res.content, "utf-8");
 			await state.updateAgentsProposal(id, { status: "applied", error: null, edits: use });
-			if (p.reviewId) {
-				const r = await state.review(p.reviewId);
-				if (r?.status === "open") await this.finishIfDone(r);
-			}
+			await this.pruneRuns();
 			this.app.bump("review");
 		});
 	}
@@ -566,20 +602,18 @@ export class Reviews {
 			const p = await state.agentsProposal(id);
 			if (!p) throw notFound(`proposal ${id}`);
 			await state.updateAgentsProposal(id, { status: "rejected", error: null });
-			if (p.reviewId) {
-				const r = await state.review(p.reviewId);
-				if (r?.status === "open") await this.finishIfDone(r);
-			}
+			await this.pruneRuns();
 			this.app.bump("review");
 		});
 	}
 
 	// ── what a dream hands in ────────────────────────────────────────────
 
-	/** Take a dream's result: its changes go to the review branch, the rest to the state. */
+	/** Take a dream's result: its changes go to the dreams branch, the rest to the state. */
 	submit(sub: DreamSubmit): Promise<DreamSubmitResult> {
 		return this.app.lock(async () => {
 			const { mem, repo, state } = this.app;
+			const branch = this.branch;
 			const run = await state.run(sub.runId);
 			if (!run) throw notFound(`run ${sub.runId}`);
 			if (run.status !== "running") throw new HttpError(409, `run ${run.id} is ${run.status}`);
@@ -595,68 +629,48 @@ export class Reviews {
 			await state.addVotes(sub.votes ?? {});
 			await state.markComments(sub.commentsDone ?? [], run.id);
 
+			await this.sync();
 			const ch = sub.changes ?? { notes: [], removed: [], scopes: [], skills: [] };
 			const hasChanges = ch.notes.length + ch.removed.length + ch.skills.length > 0;
-			let review = await state.openReview();
-			let reviewId: string | undefined;
-			let items = 0;
-			if (hasChanges || sub.agents?.length) {
-				if (!review) {
-					const id = newReviewId();
-					review = { id, branch: `${REVIEW_PREFIX}${id}`, status: "open", title: "", createdAt: finishedAt, baseCommit: await repo.head(MAIN), runs: [] };
-					await repo.createBranch(review.branch, MAIN);
-					await state.saveReview(review);
-				} else {
-					await this.sync(review);
+			if (hasChanges) {
+				const cur = new Map((await mem.notes(branch)).map((n) => [n.id, n]));
+				const upsert: Note[] = [];
+				const remove: string[] = [];
+				for (const { before, after } of ch.notes) {
+					// What the reviewer did to the note while the dream ran stays.
+					const next = mergeNote(before, cur.get(after.id), after);
+					if (next && !sameNote(cur.get(after.id), next)) upsert.push(next);
 				}
-				reviewId = review.id;
-				if (hasChanges) {
-					const cur = new Map((await mem.notes(review.branch)).map((n) => [n.id, n]));
-					const upsert: Note[] = [];
-					const remove: string[] = [];
-					for (const { before, after } of ch.notes) {
-						// What the reviewer did to the note while the dream ran stays.
-						const next = mergeNote(before, cur.get(after.id), after);
-						if (next && !sameNote(cur.get(after.id), next)) upsert.push(next);
-					}
-					for (const gone of ch.removed) {
-						const now = cur.get(gone.id);
-						if (now && sameNote(now, gone)) remove.push(gone.id);
-					}
-					// A project that gets its first note: its folder (scope.json) is proposed with the note.
-					const known = new Set((await mem.scopes(review.branch)).map((x) => x.id));
-					for (const sc of ch.scopes ?? []) if (!known.has(sc.id)) await mem.ensureScope(review.branch, sc);
-					await mem.upsert(review.branch, upsert, { like: MAIN });
-					await mem.remove(review.branch, remove);
-					for (const s of ch.skills) await mem.upsertSkill(review.branch, s);
-					await repo.commit(review.branch, `${title}\n\nrun ${run.id}`, DREAM_AUTHOR);
+				for (const gone of ch.removed) {
+					const now = cur.get(gone.id);
+					if (now && sameNote(now, gone)) remove.push(gone.id);
 				}
-				for (const a of sub.agents ?? []) await state.addAgentsProposal({ ...a, runId: run.id, reviewId: review.id });
-				if (!review.runs.includes(run.id)) review.runs.push(run.id);
-				const c = await this.compute(review);
-				const pendingAgents = (await state.agentsProposals({ reviewId: review.id, status: "pending" })).length;
-				items = c.diffs.length + c.skillDiffs.length + pendingAgents;
-				review.title = `review ${review.createdAt.slice(0, 10)}: ${countsLabel([...c.diffs, ...c.skillDiffs.map(() => ({ kind: "skill" }))], pendingAgents) || "nothing left"}`;
-				await state.saveReview(review);
+				// A project that gets its first note: its folder (scope.json) is proposed with the note.
+				const known = new Set((await mem.scopes(branch)).map((x) => x.id));
+				for (const sc of ch.scopes ?? []) if (!known.has(sc.id)) await mem.ensureScope(branch, sc);
+				await mem.upsert(branch, upsert, { like: MAIN });
+				await mem.remove(branch, remove);
+				for (const s of ch.skills) await mem.upsertSkill(branch, s);
+				await repo.commit(branch, `${title}\n\nrun ${run.id}`, DREAM_AUTHOR);
 			}
-			const status = hasChanges || sub.agents?.length ? "ok" : sub.status === "ok" ? "ok" : "noop";
-			await state.updateRun(run.id, { status, finishedAt, report: sub.report, sessions: sub.sessions, cost: sub.cost, reviewId, title });
-			// The dream may have emptied the review (dropped its own pending notes on a comment).
-			if (review && reviewId) {
-				await state.saveReview(review);
-				await this.finishIfDone(review);
-			}
+			for (const a of sub.agents ?? []) await state.addAgentsProposal({ ...a, runId: run.id });
+			const proposed = hasChanges || !!sub.agents?.length;
+			if (proposed) await state.setReviewRuns([...(await state.reviewRuns()).filter((r) => r !== run.id), run.id]);
+			const status = proposed ? "ok" : sub.status === "ok" ? "ok" : "noop";
+			// The report first: it is what keeps the run among those whose proposals are pending.
+			await state.updateRun(run.id, { status, finishedAt, report: sub.report, sessions: sub.sessions, cost: sub.cost, title });
+			const c = await this.compute();
+			await this.pruneRuns(c);
+			const items = c.diffs.length + c.skillDiffs.length + (await state.agentsProposals({ status: "pending" })).length;
 			this.app.bump("dream");
 			this.app.pushSoon();
-			return { status, reviewId, url: reviewId ? `${this.app.url}/#/review` : undefined, items };
+			return { status, url: proposed ? `${this.app.url}/#/review` : undefined, items };
 		});
 	}
 
-	/** What the index of each scope would hold if the open review were accepted whole (for previews). */
-	async preview(scope: string): Promise<{ text: string; tokens: number; over: number } | null> {
-		const r = await this.app.state.openReview();
-		if (!r) return null;
-		const notes = (await this.app.notes(r.branch)).filter((n) => n.scope === scope);
+	/** What the index of a scope would hold if everything proposed were accepted (for previews). */
+	async preview(scope: string): Promise<{ text: string; tokens: number; over: number }> {
+		const notes = (await this.app.notes(this.branch)).filter((n) => n.scope === scope);
 		const idx = buildIndex(notes, scope, this.app.budgetOf(scope));
 		return { text: idx.text, tokens: idx.tokens, over: idx.dropped.length };
 	}

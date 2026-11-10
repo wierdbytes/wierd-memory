@@ -6,13 +6,14 @@
  * It proposes one change of every kind against the notes the server has
  * (new notes, an edit, a move, a replacement, a closed note, confirmations,
  * a risky note, a skill, an AGENTS.md edit) and leaves a review comment.
- * Never point it at the real server unless you want that review there.
+ * Run it again to add a second dream's proposals to the same dreams branch.
+ * Never point it at the real server unless you want those proposals there.
  */
 
 import { mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { applyOp, type DreamSubmit, type DreamWorkspace, type Evidence, isSessionEvidence, type Op, type ReportItem, today, Workspace } from "../packages/core/src/index.ts";
+import { applyOp, type DreamSubmit, type DreamSubmitResult, type DreamWorkspace, type Evidence, isSessionEvidence, type Op, type ReportItem, today, Workspace } from "../packages/core/src/index.ts";
 
 const base = (process.env.WMEM_URL || "http://127.0.0.1:17433").replace(/\/+$/, "");
 
@@ -134,6 +135,6 @@ const sub: DreamSubmit = {
 	sessions: Object.keys(sessionTitles).length,
 	cost: 1.73,
 };
-const result = await api<{ status: string; reviewId?: string; items?: number }>("POST", "/api/dream/submit", sub);
-if (result.reviewId) await api("POST", `/api/reviews/${result.reviewId}/comments`, { body: "Раздели эту заметку на две: про порядок шагов и про причины.", noteId: upd.id });
-console.log(`${base}: review ${result.reviewId} with ${result.items} items (run ${run.id})`);
+const result = await api<DreamSubmitResult>("POST", "/api/dream/submit", sub);
+if (result.url) await api("POST", "/api/review/comments", { body: "Раздели эту заметку на две: про порядок шагов и про причины.", noteId: upd.id });
+console.log(`${base}: ${result.items} item(s) to decide on the dreams branch (run ${run.id}) — ${result.url ?? "nothing proposed"}`);

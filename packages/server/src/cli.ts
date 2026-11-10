@@ -17,6 +17,7 @@ import {
 	type InboxItem,
 	type NoteHistoryEntry,
 	type NoteView,
+	type ReviewDecision,
 	type ReviewItem,
 	type ReviewView,
 	type RunInfo,
@@ -159,11 +160,28 @@ function printItem(it: ReviewItem, full: boolean): void {
 	out();
 }
 
-function printReview(v: ReviewView | null, full: boolean): void {
-	if (!v) return out("No open review.");
-	out(`${bold(v.title || v.id)} ${dim(`${v.id} · ${v.status} · ${v.pending} to decide · ${v.accepted} accepted · ${v.rejected} rejected`)}`);
-	if (v.status === "open") out(dim(`branch ${v.branch}${v.compareUrl ? ` · ${v.compareUrl}` : ""}`));
+/** `+3 ~1 ✓1`: items by kind. */
+function countsShort(counts: ReviewView["counts"], agents: number): string {
+	const n = (...kinds: string[]) => kinds.reduce((s, k) => s + (counts[k as keyof typeof counts] ?? 0), 0);
+	return [
+		n("added") && `+${n("added")}`,
+		n("updated", "moved") && `~${n("updated", "moved")}`,
+		n("superseded") && `⇄${n("superseded")}`,
+		n("deprecated", "removed") && `−${n("deprecated", "removed")}`,
+		n("confirmed") && `✓${n("confirmed")}`,
+		n("skill") && `§${n("skill")}`,
+		agents && `AGENTS.md ${agents}`,
+	]
+		.filter(Boolean)
+		.join(" ");
+}
+
+function printReview(v: ReviewView, full: boolean): void {
+	const head = v.pending ? `${v.pending} to decide (${countsShort(v.counts, v.agentsPending)})` : "nothing to decide";
+	out(`${bold(head)} ${dim(`· branch ${v.branch}${v.compareUrl ? ` · ${v.compareUrl}` : ""}`)}`);
 	for (const w of v.warnings) out(`⚠ ${w}`);
+	const waiting = v.comments.filter((x) => !x.processedRun);
+	if (waiting.length) out(dim(`${waiting.length} comment(s) wait for the next dream: ${waiting.map((x) => x.id).join(", ")}`));
 	out();
 	let scope = "";
 	for (const it of v.items) {
@@ -177,9 +195,9 @@ function printReview(v: ReviewView | null, full: boolean): void {
 		out(`${bold("📄 AGENTS.md")}  ${a.projectName} ${a.rel}${a.summary ? ` — ${a.summary}` : ""}`);
 		out(dim(`  agents:${a.id} · ${a.edits.length} edit(s) · apply: wmem review apply ${a.id}`));
 	}
-	if (v.status === "open" && (v.items.length || v.agents.some((a) => a.status === "pending"))) {
+	if (v.pending) {
 		out();
-		out(dim("wmem review accept <key…|--all> · reject <key…|--all> · edit <key> --title … --body … · comment <text> · close"));
+		out(dim("wmem review accept <key…|--all> · reject <key…|--all> · edit <key> --title … --body … · comment <text> · log"));
 	}
 }
 
@@ -196,7 +214,7 @@ const HELP = `wmem — memory for pi agents, kept in a git repository (http://12
   wmem service install|uninstall|status|restart   keep the server running (launchd)
   wmem init [--repo <git url>] [--branch <name>] [--from <ref>]
                                       set up the memory repository (before the first start; see below)
-  wmem status                         memory, the open review, dreams, the remote
+  wmem status                         memory, what waits for review, dreams, the remote
   wmem open                           open the web UI
 
 memory
@@ -213,15 +231,15 @@ memory
   wmem inbox [rm <id>]
   wmem history [--limit N]            commits on approved memory
 
-review (what dreams propose)
-  wmem review [--short]               the open review (--short: one line per item)
+review (what dreams propose; it waits on the branch "dreams" until you decide)
+  wmem review [--short]               what waits for a decision (--short: one line per item)
   wmem review accept <key…> | --all   make the proposals memory
   wmem review reject <key…> | --all [--reason <why>]
   wmem review edit <key> [--title …] [--body …] [--when …] [--index …] [--type …] [--scope …]   edit, then accept
   wmem review comment <text> [--note <id>]                 an instruction for the next dream
+  wmem review uncomment <comment id>  take back a comment no dream has applied yet
   wmem review apply|drop <agents id>  AGENTS.md proposals
-  wmem review close                   reject whatever is left
-  wmem reviews                        past reviews
+  wmem review log [--limit N]         past decisions, newest first
 
 dreams
   wmem dream [status]                 running, last, due
@@ -243,7 +261,7 @@ setup
   wmem herdr install                  install the Herdr mod
 
 Notes are files: ~/.wierd-memory/memory/scopes/<scope>/notes/*.md. Edit one in an editor and the server commits it;
-git log, git diff <approved>...review/<id> and GitHub show the rest.
+git log, git diff <approved>...dreams and GitHub show the rest.
 
 --json prints the server's answer as is.`;
 
@@ -292,7 +310,7 @@ async function main(): Promise<void> {
 				out(`${bold("wierd-memory")} ${s.version}  ${s.url}`);
 				out(`memory    ${s.notes.active} notes in ${s.notes.scopes} scopes${s.notes.off ? `, ${s.notes.off} off` : ""}${s.notes.archived ? `, ${s.notes.archived} archived` : ""} ${dim(`· at ${s.memver}`)}`);
 				out(`inbox     ${s.inbox} waiting for the next dream`);
-				out(`review    ${s.review ? `${s.review.pending} to decide — ${s.review.title} ${dim(`(${s.url}/#/review)`)}` : "nothing to review"}`);
+				out(`review    ${s.review.pending ? `${s.review.pending} to decide ${dim(`(${s.url}/#/review)`)}` : "nothing to decide"}`);
 				const d = s.dream;
 				out(`dream     ${d.running ? `running (${d.running.id}, ${ago(d.running.startedAt)})` : d.last ? `last ${d.last.status} ${ago(d.last.finishedAt ?? d.last.startedAt)}` : "none yet"} ${dim(`· ${d.scheduled ? (d.due.due ? "due" : "not due") : "schedule off"}: ${d.due.reason}`)}`);
 				out(`storage   ${s.git.dir} ${dim(`· git, branch ${s.git.branch} at ${s.git.head.slice(0, 8)}`)}`);
@@ -424,27 +442,20 @@ async function main(): Promise<void> {
 			});
 		}
 
-		case "reviews": {
-			const list = await get<Array<ReviewView>>("/api/reviews");
-			return show(list, () => {
-				for (const r of list) out(`${r.id}  ${r.status.padEnd(7)} ${dim(r.createdAt.slice(0, 10))} ${r.title} ${dim(`· ${r.accepted} accepted, ${r.rejected} rejected${r.pending ? `, ${r.pending} to decide` : ""}`)}`);
-				if (!list.length) out("No reviews yet.");
-			});
-		}
-
 		case "review": {
 			const keysOrAll = () => {
-				if (a.flags.all) return undefined;
+				if (a.flags.all) return { all: true };
 				if (!rest.length) throw new ApiFailure(400, `wmem review ${sub} <key…> | --all`);
-				return rest.map((k) => (k.includes(":") ? k : `note:${k}`));
+				return { keys: rest.map((k) => (k.includes(":") ? k : `note:${k}`)) };
 			};
+			const left = (v: ReviewView) => (v.pending ? `${v.pending} left to decide` : "nothing left to decide");
 			if (!sub || sub === "show") {
-				const v = await get<ReviewView | null>("/api/review");
+				const v = await get<ReviewView>("/api/review");
 				return show(v, () => printReview(v, a.flags.short !== true));
 			}
 			if (sub === "accept" || sub === "reject") {
-				const v = await api<ReviewView>("POST", `/api/reviews/open/${sub}`, { keys: keysOrAll(), reason: str(a.flags.reason) });
-				return show(v, () => out(`${sub}ed. ${v.status === "open" ? `${v.pending} left to decide` : `review ${v.status}`} (${v.accepted} accepted, ${v.rejected} rejected)`));
+				const v = await api<ReviewView>("POST", `/api/review/${sub}`, { ...keysOrAll(), ...(sub === "reject" && str(a.flags.reason) ? { reason: str(a.flags.reason) } : {}) });
+				return show(v, () => out(`${sub}ed. ${left(v)}`));
 			}
 			if (sub === "edit") {
 				if (!rest[0]) throw new ApiFailure(400, "wmem review edit <key> --title … --body …");
@@ -452,23 +463,33 @@ async function main(): Promise<void> {
 				if (str(a.flags.scope)) edit.scope = await findNoteScope(str(a.flags.scope) as string);
 				if (!Object.keys(edit).length) throw new ApiFailure(400, "nothing to change: --title, --body, --when, --index, --type, --scope");
 				const key = rest[0].includes(":") ? rest[0] : `note:${rest[0]}`;
-				const v = await api<ReviewView>("POST", "/api/reviews/open/accept", { keys: [key], edit });
-				return show(v, () => out(`edited and accepted ${key}. ${v.status === "open" ? `${v.pending} left to decide` : `review ${v.status}`}`));
+				const v = await api<ReviewView>("POST", "/api/review/accept", { keys: [key], edit });
+				return show(v, () => out(`edited and accepted ${key}. ${left(v)}`));
 			}
 			if (sub === "comment") {
 				const text = rest.join(" ");
 				if (!text) throw new ApiFailure(400, "wmem review comment <text> [--note <id>]");
-				const v = await api<ReviewView>("POST", "/api/reviews/open/comments", { body: text, noteId: str(a.flags.note) });
-				return show(v, () => out("comment kept: `wmem dream review` applies it now, otherwise the next dream does"));
+				const v = await api<ReviewView>("POST", "/api/review/comments", { body: text, noteId: str(a.flags.note) });
+				const added = v.comments[v.comments.length - 1];
+				return show(v, () => out(`comment ${added?.id ?? ""} kept: \`wmem dream review\` applies it now, otherwise the next dream does`));
+			}
+			if (sub === "uncomment") {
+				if (!rest[0]) throw new ApiFailure(400, "wmem review uncomment <comment id>");
+				const v = await api<ReviewView>("DELETE", `/api/review/comments/${encodeURIComponent(rest[0])}`);
+				return show(v, () => out(`removed comment ${rest[0]}`));
 			}
 			if (sub === "apply" || sub === "drop") {
 				if (!rest[0]) throw new ApiFailure(400, `wmem review ${sub} <agents id>`);
-				await api("POST", `/api/agents/${rest[0].replace(/^agents:/, "")}/${sub === "apply" ? "apply" : "reject"}`, {});
-				return out(sub === "apply" ? "applied to the working copy (not committed)" : "dropped");
+				const v = await api<ReviewView>("POST", `/api/agents/${rest[0].replace(/^agents:/, "")}/${sub === "apply" ? "apply" : "reject"}`, {});
+				return show(v, () => out(sub === "apply" ? "applied to the working copy (not committed)" : "dropped"));
 			}
-			if (sub === "close") {
-				const v = await api<ReviewView>("POST", "/api/reviews/open/close", {});
-				return show(v, () => out(`review ${v.status}`));
+			if (sub === "log") {
+				const list = await get<ReviewDecision[]>(`/api/review/decisions${qs({ limit: str(a.flags.limit) ?? 30 })}`);
+				return show(list, () => {
+					if (!list.length) return out("Nothing decided yet.");
+					const mark: Record<string, string> = { accepted: c(32, "✓ accepted"), edited: c(32, "✎ edited  "), rejected: c(31, "✗ rejected") };
+					for (const d of list) out(`${dim(d.at.slice(0, 16).replace("T", " "))} ${mark[d.decision] ?? d.decision} ${(KIND[d.kind] ?? d.kind).padEnd(10)} ${d.title} ${dim(`${d.key}${d.by ? ` · ${d.by}` : ""}${d.reason ? ` — ${d.reason}` : ""}`)}`);
+				});
 			}
 			throw new ApiFailure(400, `unknown: wmem review ${sub}`);
 		}
@@ -550,7 +571,7 @@ async function main(): Promise<void> {
 				else cur = cur[k] = { ...(src && typeof src === "object" ? (src as object) : {}) } as Record<string, unknown>;
 			});
 			const next = await api<Record<string, unknown>>("PUT", "/api/config", patch);
-			return out(`${sub} = ${JSON.stringify(read(next))}${path[0] === "port" || sub === "memory.dir" || sub === "memory.branch" ? " (takes effect when the server restarts)" : ""}`);
+			return out(`${sub} = ${JSON.stringify(read(next))}${path[0] === "port" || sub === "memory.dir" || sub === "memory.branch" || sub === "memory.reviewBranch" ? " (takes effect when the server restarts)" : ""}`);
 		}
 
 		case "service":

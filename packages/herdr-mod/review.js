@@ -1,4 +1,4 @@
-// The open review: what dreams propose, as rows of the list and as cards to
+// What dreams propose (everything still to decide), as rows of the list and as cards to
 // decide on (accept, edit and accept, reject), and AGENTS.md proposals.
 // `m` is the panel (main.js).
 
@@ -39,6 +39,15 @@ function changes(item) {
 function glyph(t, kind, id, size = 13) {
   const k = kindOf(kind);
   return div().id(id).w(12).h(18).flex_none().flex().items_center().justify_center().text_size(size).font_semibold().text_color(k.color(t)).tooltip(k.label).child(k.glyph);
+}
+
+// "+3 ~1 §1 ¶1": what waits for a decision, by kind (the summary's counts).
+export function countsLine(review) {
+  const counts = review?.counts ?? {};
+  const parts = Object.keys(KINDS).filter((k) => k !== "agents" && counts[k] > 0).map((k) => `${KINDS[k].glyph}${counts[k]}`);
+  for (const k of Object.keys(counts)) if (!(k in KINDS) && counts[k] > 0) parts.push(`${k} ${counts[k]}`);
+  if (review?.agentsPending > 0) parts.push(`${KINDS.agents.glyph}${review.agentsPending}`);
+  return parts.join(" ");
 }
 
 // What a search looks through in a proposal.
@@ -156,7 +165,7 @@ export function reviewCard(m, t, { item, review }) {
       .child(chip(t, "v-type", changed("type") ? `${b.type} → ${n.type}` : n.type)))
     .child(chip(t, "v-scope", item.kind === "moved" ? `${item.fromName ?? "?"} → ${item.scopeName}` : item.scopeName, item.scope === "global" ? "Global: every project on this computer" : item.scope))
     .when(Boolean(n.pinned), (el) => el.child(chip(t, "v-pin", "pinned")))
-    .when(Boolean(item.reviewer), (el) => el.child(chip(t, "v-reviewer", "from your comment", "A dream made this on a comment you left in the review"))));
+    .when(Boolean(item.reviewer), (el) => el.child(chip(t, "v-reviewer", "from your comment", "A dream made this on a comment you left"))));
 
   for (const code of item.risky ?? []) body.push(warning(t, RISKY[code] ?? `Risky content in the text: ${code}`));
   if (item.newerEvidence?.length) {
@@ -239,9 +248,9 @@ export function reviewCard(m, t, { item, review }) {
   const actions = [
     button(t, "v-accept", { icon: "check", label: m.busy === "accept" ? "Accepting…" : "Accept", tip: "Accept: it becomes memory at once (A)", primary: true, off: busy, onClick: (_e, cx) => m.decide("accept", item, null, cx) }),
     ...(item.editable ? [button(t, "v-edit", { icon: "edit", label: "Edit", tip: "Change the text, then accept (E)", off: busy, onClick: (_e, cx) => m.edit("review", item.note, cx) })] : []),
-    button(t, "v-reject", { icon: "x", label: m.busy === "reject" ? "Rejecting…" : "Reject", tip: "Reject: it leaves the review and isn't proposed again without new evidence (X)", danger: true, off: busy, onClick: (_e, cx) => m.decide("reject", item, null, cx) }),
+    button(t, "v-reject", { icon: "x", label: m.busy === "reject" ? "Rejecting…" : "Reject", tip: "Reject: it is dropped and isn't proposed again without new evidence (X)", danger: true, off: busy, onClick: (_e, cx) => m.decide("reject", item, null, cx) }),
     div().flex_1(),
-    iconButton(t, "v-web", "external", "Open the review in the browser (comments, the dream's report)", (_e, cx) => cx.open_url(`${m.server}/#/review`)),
+    iconButton(t, "v-web", "external", "Open what dreams propose in the browser (comments, the dreams' reports)", (_e, cx) => cx.open_url(`${m.server}/#/review`)),
   ];
   return { body, actions };
 }
@@ -284,7 +293,7 @@ export function agentsCard(m, t, { proposal: p }) {
     button(t, "g-apply", { icon: "check", label: m.busy === "apply" ? "Applying…" : "Apply", tip: `Edit ${p.repoRoot}/${p.rel} (the working copy; commits nothing) (A)`, primary: true, off: busy, onClick: (_e, cx) => m.agents("apply", p, cx) }),
     button(t, "g-reject", { icon: "x", label: m.busy === "reject" ? "Rejecting…" : "Reject", tip: "Drop the proposal: the file stays as it is (X)", danger: true, off: busy, onClick: (_e, cx) => m.agents("reject", p, cx) }),
     div().flex_1(),
-    iconButton(t, "g-web", "external", "Open the review in the browser", (_e, cx) => cx.open_url(`${m.server}/#/review`)),
+    iconButton(t, "g-web", "external", "Open what dreams propose in the browser", (_e, cx) => cx.open_url(`${m.server}/#/review`)),
   ];
   return { body, actions };
 }

@@ -5,8 +5,8 @@
 // folds below them. A mark says how a note reaches pi: always in its context,
 // read when relevant, or found by search only. A note opens as a card with
 // where it came from: the sessions it cites, the lines it cites, and ↗ to open
-// such a session in the peek panel. What dreams propose (the open review) sits
-// on top, to accept, edit or reject; then the inbox (what waits for the next
+// such a session in the peek panel. What dreams propose (everything still to
+// decide, on the dreams branch) sits on top, to accept, edit or reject; then the inbox (what waits for the next
 // dream); the dream's state is at the bottom.
 //
 // Memory lives in the wierd-memory server (a local HTTP API, see api.js); this
@@ -19,7 +19,7 @@ import { Api, DEFAULT_SERVER } from "./api.js";
 import { icon, mono, mark, hint, button, iconButton } from "./ui.js";
 import { norm, words, hay, snippet, twoLines, ago, stamp, running } from "./text.js";
 import { noteCard, inboxCard } from "./cards.js";
-import { reviewRow, agentsRow, reviewCard, agentsCard, reviewHay, agentsHay } from "./review.js";
+import { reviewRow, agentsRow, reviewCard, agentsCard, reviewHay, agentsHay, countsLine } from "./review.js";
 
 // The server answers a waiting request (GET /api/wait) as soon as anything
 // changes, or after this many seconds.
@@ -264,7 +264,7 @@ export default class WierdMemory extends View {
       if (!byScope.has(n.scope)) byScope.set(n.scope, []);
       byScope.get(n.scope).push(n);
     }
-    this.data = { scopes, byScope, byId, inbox, review: review?.status === "open" ? review : null };
+    this.data = { scopes, byScope, byId, inbox, review: review ?? null };
   }
 
   setContext(cwd, c) {
@@ -289,8 +289,8 @@ export default class WierdMemory extends View {
     const list = card?.kind === "note" ? card.note.evidence : card?.kind === "review" ? card.item.evidence : null;
     if (!list?.length || this.evBusy || !this.api) return;
     const refs = list.filter((ev) => {
-      if (/^(review:|manual)/.test(ev.s)) return false;
-      if (ev.s.startsWith("inbox:")) return !(ev.s in this.ev);
+      if (ev.s === "review" || ev.s === "manual") return false;
+      if (ev.s.startsWith("inbox:") || ev.s.startsWith("comment:")) return !(ev.s in this.ev);
       const have = this.ev[ev.s];
       return !have || (ev.e ?? []).some((id) => !(id in have.entries));
     });
@@ -303,6 +303,10 @@ export default class WierdMemory extends View {
         for (const ref of refs) {
           if (ref.s.startsWith("inbox:")) {
             this.ev[ref.s] = out.inbox?.[ref.s.slice(6)] ?? null;
+            continue;
+          }
+          if (ref.s.startsWith("comment:")) {
+            this.ev[ref.s] = out.comments?.[ref.s.slice(8)] ?? null;
             continue;
           }
           const got = out.sessions?.[ref.s] ?? { missing: true };
@@ -402,7 +406,13 @@ export default class WierdMemory extends View {
     return note ? { kind: "note", note, scope: this.data.scopes.find((s) => s.id === note.scope) ?? null } : null;
   }
 
-  // What the review still asks to decide: notes and skills, then AGENTS.md proposals.
+  // How many proposals wait for a decision (0: nothing to decide, no Review group).
+  toDecide() {
+    const r = this.data?.review;
+    return r ? (r.pending ?? this.proposals().length) : 0;
+  }
+
+  // What still waits for a decision: notes and skills, then AGENTS.md proposals.
   proposals() {
     const r = this.data?.review;
     if (!r) return [];
@@ -420,7 +430,8 @@ export default class WierdMemory extends View {
         const out = await request(this.api);
         then?.(out, cx);
       } catch (e) {
-        notify({ title: failed, body: message(e), level: "error" });
+        // 409: what the panel showed changed or was decided meanwhile; the read below shows it as it is now.
+        notify({ title: e?.status === 409 ? `${failed}: it changed meanwhile` : failed, body: message(e), level: "error" });
       } finally {
         this.busy = null;
         this.refresh(cx);
@@ -429,9 +440,14 @@ export default class WierdMemory extends View {
     });
   }
 
-  // The review as the server answered a decision (null once nothing is left).
+  // What waits for a decision, as the server answered one.
   setReview(review) {
-    if (this.data) this.data.review = review?.status === "open" ? review : null;
+    if (this.data && review?.items) this.data.review = review;
+  }
+
+  // `keys` and the `versions` the panel shows: the server refuses (409) an item that changed since.
+  pick(items) {
+    return { keys: items.map((x) => x.key), versions: Object.fromEntries(items.map((x) => [x.key, x.version])) };
   }
 
   // After a decision: the list, the cursor on what took the decided row's place.
@@ -443,11 +459,10 @@ export default class WierdMemory extends View {
 
   // Accept or reject a proposal; `edit`: the text as the person changed it first.
   decide(what, item, edit, cx) {
-    const review = this.data?.review;
-    if (!review) return;
+    if (!this.data?.review) return;
     const at = this.proposals().findIndex((p) => p.kind === "review" && p.item.key === item.key);
-    const body = { keys: [item.key], ...(edit ? { edit } : {}) };
-    this.act(what, what === "accept" ? "Couldn't accept it" : "Couldn't reject it", (api) => api.post(`/api/reviews/${encodeURIComponent(review.id)}/${what}`, body), (out) => {
+    const body = { ...this.pick([item]), ...(edit ? { edit } : {}) };
+    this.act(what, what === "accept" ? "Couldn't accept it" : "Couldn't reject it", (api) => api.post(`/api/review/${what}`, body), (out) => {
       this.setReview(out);
       this.next(at);
     }, cx);
@@ -455,8 +470,8 @@ export default class WierdMemory extends View {
 
   // "Accept all": the first click asks, the second (soon after) does it.
   acceptAll(cx) {
-    const review = this.data?.review;
-    if (!review || this.busy) return;
+    const items = this.data?.review?.items ?? [];
+    if (!items.length || this.busy) return;
     if (!this.sure || Date.now() - this.sure > CONFIRM_MS) {
       const at = (this.sure = Date.now());
       cx.timer.after(CONFIRM_MS, (cx) => {
@@ -467,7 +482,8 @@ export default class WierdMemory extends View {
       return;
     }
     this.sure = 0;
-    this.act("accept", "Couldn't accept the review", (api) => api.post(`/api/reviews/${encodeURIComponent(review.id)}/accept`, {}), (out) => {
+    // Only what the panel shows: never `all`, which would take in what a dream proposed since.
+    this.act("accept", "Couldn't accept them", (api) => api.post("/api/review/accept", this.pick(items)), (out) => {
       this.setReview(out);
       this.want = { review: 0 };
     }, cx);
@@ -477,8 +493,8 @@ export default class WierdMemory extends View {
   agents(what, proposal, cx) {
     const at = this.proposals().findIndex((p) => p.kind === "agents" && p.proposal.id === proposal.id);
     this.act(what, what === "apply" ? `Couldn't apply it to ${proposal.rel}` : "Couldn't reject it", (api) => api.post(`/api/agents/${encodeURIComponent(proposal.id)}/${what}`, {}), (out) => {
-      // The answer is the review, or null once it closed.
-      if (out === null || out?.items) this.setReview(out);
+      // The answer is what waits for a decision now.
+      if (out?.items) this.setReview(out);
       else if (this.data?.review) this.data.review.agents = this.data.review.agents.filter((p) => p.id !== proposal.id);
       this.next(at);
       if (what === "apply") notify({ title: `${proposal.rel} edited`, body: `${proposal.projectName}: the change is in the working copy, not committed.`, level: "success" });
@@ -832,7 +848,7 @@ export default class WierdMemory extends View {
 
     // What dreams propose: to decide.
     const all = this.proposals();
-    if (d.review) {
+    if (d.review && this.toDecide() > 0) {
       const shown = searching ? all.filter((p) => hit(norm(p.kind === "review" ? reviewHay(p.item) : agentsHay(p.proposal)))) : all;
       found += shown.length;
       if (shown.length || !searching) {
@@ -962,10 +978,10 @@ export default class WierdMemory extends View {
     const extra = [];
     if (!searching && notes > 0) {
       extra.push(sure
-        ? small("rv-all", this.busy ? "Accepting…" : `Accept ${notes}?`, "Click again to accept every note and skill left in the review", t.accent, (cx) => this.acceptAll(cx))
+        ? small("rv-all", this.busy ? "Accepting…" : `Accept ${notes}?`, `Click again to accept the ${notes} notes and skills shown here`, t.accent, (cx) => this.acceptAll(cx))
         : small("rv-all", "Accept all", `Accept every note and skill left (${notes}): asks once more. AGENTS.md proposals are applied one by one.`, null, (cx) => this.acceptAll(cx)));
     }
-    if (!searching) extra.push(iconButton(t, "rv-web", "external", "Open the review in the browser (comments, the dream's report)", (_e, cx) => cx.open_url(`${this.server}/#/review`), 22));
+    if (!searching) extra.push(iconButton(t, "rv-web", "external", "Open what dreams propose in the browser (comments, the dreams' reports)", (_e, cx) => cx.open_url(`${this.server}/#/review`), 22));
     return this.groupRow(t, "review", {
       name: "Review",
       hint: this.width > 330 && !sure ? "to decide" : "",
@@ -973,7 +989,7 @@ export default class WierdMemory extends View {
       open,
       color: t.accent,
       extra,
-      tip: `${review.title}\nWhat dreams propose: nothing is memory until you accept it.${review.accepted || review.rejected ? `\nSo far: ${review.accepted} accepted, ${review.rejected} rejected.` : ""}`,
+      tip: `${this.toDecide()} to decide${countsLine(review) ? `: ${countsLine(review)}` : ""}\nWhat dreams propose: nothing is memory until you accept it.${review.waitingComments ? `\n${review.waitingComments} comment${review.waitingComments === 1 ? "" : "s"} wait for the next dream.` : ""}`,
       onClick: searching ? null : (cx) => this.toggle("review", true, cx),
     });
   }
@@ -1084,7 +1100,7 @@ export default class WierdMemory extends View {
   card(t, card) {
     const id = `card-${this.view?.kind ?? "gone"}-${this.view?.id ?? ""}${this.form ? "-form" : ""}`;
     const scroll = (children) => v_flex().id(`${id}-box`).flex_1().min_h(0).child(v_flex().id(id).size_full().overflow_y_scrollbar().px(16).pt(14).pb(18).gap(12).children(children));
-    if (card.kind === "gone") return [scroll([div().text_color(t.dim).child(this.view?.kind === "review" || this.view?.kind === "agents" ? "This proposal is no longer in the review." : "This is no longer in memory.")])];
+    if (card.kind === "gone") return [scroll([div().text_color(t.dim).child(this.view?.kind === "review" || this.view?.kind === "agents" ? "This proposal no longer waits for a decision." : "This is no longer in memory.")])];
     const { body, actions } =
       card.kind === "note" ? noteCard(this, t, card)
       : card.kind === "inbox" ? inboxCard(this, t, card.item)
@@ -1132,11 +1148,12 @@ export default class WierdMemory extends View {
         ? item("f-dream", "alert", `Dream failed ${ago(at)}`, `${facts}\n${last.error ?? ""}${next}`, t.blocked)
         : item("f-dream", "moon", `Dreamt ${ago(at)}`, `${facts}${next}`);
     }
-    const todo = this.proposals().length;
+    const todo = this.toDecide();
+    const counts = d.review ? countsLine(d.review) : "";
     const inbox = d.inbox.length;
     return bar
       .child(status)
-      .when(Boolean(d.review), (el) => el.child(item("f-review", "review", `Review ${todo}`, `${d.review.title}\n${todo} to decide: click to go through them`, t.accent, (cx) => {
+      .when(todo > 0, (el) => el.child(item("f-review", "review", `${todo} to decide`, `What dreams propose${counts ? `: ${counts}` : ""}\nClick to go through them`, t.accent, (cx) => {
         this.goReview();
         this.handle.focus();
         cx.notify();

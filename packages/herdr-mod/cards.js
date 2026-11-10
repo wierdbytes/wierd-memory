@@ -14,7 +14,7 @@ const KIND = {
   user: "Your own words in that session",
   observed: "Seen in that session",
   inbox: "Kept with memory_inbox or /remember",
-  reviewer: "A comment left in a review",
+  reviewer: "A comment you left on what dreams propose",
 };
 
 export const whenBox = (t, text) => box(t)
@@ -189,8 +189,15 @@ function evidenceItem(m, t, ev, k, names) {
   const lines = [];
   let name = "";
   let open = null;
-  if (ev.s.startsWith("review:")) {
-    name = "A comment left in a review";
+  if (ev.s === "review") {
+    name = "Edited by you before accepting";
+  } else if (ev.s.startsWith("comment:")) {
+    // The evidence lookup brings the comment; GET /api/review's list has it too while it is recent.
+    const c = m.ev[ev.s] ?? (m.data?.review?.comments ?? []).find((x) => x.id === ev.s.slice(8));
+    name = c ? `Comment by ${c.author || "you"}${c.at ? `, ${stamp(c.at)}` : ""}` : "A review comment";
+    if (c?.body) lines.push({ role: "", text: c.body });
+    else if (!c && m.evBusy) lines.push({ role: "", text: "Reading…" });
+    else if (!c && ev.s in m.ev) lines.push({ role: "", text: "The comment is no longer kept." });
   } else if (ev.s === "manual") {
     name = "Edited by hand";
   } else if (ev.s.startsWith("inbox:")) {

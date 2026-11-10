@@ -3,9 +3,10 @@
  *
  * One branch is approved memory (`memory.branch`); it is checked out in the
  * repository's own folder, so notes are plain files anyone can read, grep and
- * edit. A review is a branch `review/<id>` off it, checked out as a linked
- * worktree under `.local/worktrees/` — the server writes a dream's proposals
- * there. Every change is a commit with an author.
+ * edit. Another one, `dreams` (`memory.reviewBranch`), holds approved memory
+ * plus what dreams propose; it is checked out as a linked worktree under
+ * `.local/worktrees/` — the server writes a dream's proposals there. Every
+ * change is a commit with an author.
  *
  * Nothing here knows what a note is: files, branches, commits, the remote.
  */
@@ -16,7 +17,6 @@ import { join } from "node:path";
 
 /** The approved branch, whatever it is called (`memory.branch`). */
 export const MAIN = "@approved";
-export const REVIEW_PREFIX = "review/";
 
 export interface ExecResult {
 	code: number;
@@ -91,7 +91,7 @@ export class Repo {
 		private log: (m: string) => void = () => {},
 	) {}
 
-	/** The branch a ref names: the approved one, or a review branch. */
+	/** The branch a ref names: the approved one, or another (the dreams branch). */
 	branchOf(ref: string): string {
 		if (ref === MAIN) return this.branch;
 		if (!/^[A-Za-z0-9._/-]{1,120}$/.test(ref) || ref.includes("..")) throw new GitError(`bad ref "${ref}"`);
@@ -101,7 +101,7 @@ export class Repo {
 	/** Where a ref is checked out: the repository folder itself, or a worktree under `.local/worktrees`. */
 	wt(ref: string): string {
 		if (ref === MAIN) return this.dir;
-		return join(this.dir, ".local", "worktrees", this.branchOf(ref).replace(/^review\//, "").replace(/[^A-Za-z0-9._-]/g, "_"));
+		return join(this.dir, ".local", "worktrees", this.branchOf(ref).replace(/[^A-Za-z0-9._-]/g, "_"));
 	}
 
 	run(ref: string, args: string[], opts?: { timeoutMs?: number; input?: string }): Promise<ExecResult> {
@@ -177,50 +177,43 @@ export class Repo {
 		return this.ok(ref, ["rev-parse", "HEAD"]);
 	}
 
-	// ── review branches ──────────────────────────────────────────────────
+	// ── the dreams branch ────────────────────────────────────────────────
 
-	async branches(): Promise<string[]> {
-		const out = await this.ok(MAIN, ["for-each-ref", "--format=%(refname:short)", `refs/heads/${REVIEW_PREFIX}`]);
-		return out.split("\n").filter(Boolean);
-	}
-
-	/** A new branch off `from`, checked out in its own worktree. */
-	async createBranch(name: string, from: string = MAIN): Promise<void> {
-		const dir = this.wt(name);
-		await this.dropWorktree(name);
-		mkdirSync(join(dir, ".."), { recursive: true });
-		await this.ok(MAIN, ["worktree", "add", "-q", "-B", this.branchOf(name), dir, await this.head(from)]);
-	}
-
-	/** Check a branch out again when its worktree is gone (a wiped `.local`, another machine). */
-	async ensureWorktree(name: string, remote: string): Promise<void> {
+	/**
+	 * Make sure a branch other than the approved one exists and is checked out
+	 * in its own worktree: the local branch as it is; else the remote's, tracked;
+	 * else a new one where the approved branch stands. A worktree that is there
+	 * is put back as its last commit left it (whatever a crash left half-done:
+	 * the server is the only one who writes there).
+	 */
+	async ensureBranch(name: string, remote: string): Promise<void> {
 		const dir = this.wt(name);
 		const branch = this.branchOf(name);
 		if (existsSync(join(dir, ".git"))) {
-			// Whatever a crash left half-done: the server is the only one who writes here.
 			await this.run(name, ["merge", "--abort"]);
 			await this.run(name, ["reset", "-q", "--hard", "HEAD"]);
 			await this.run(name, ["clean", "-fdq"]);
 			return;
 		}
-		await this.dropWorktree(name);
-		mkdirSync(join(dir, ".."), { recursive: true });
-		const local = (await this.run(MAIN, ["rev-parse", "-q", "--verify", `refs/heads/${branch}`])).code === 0;
-		if (local) await this.ok(MAIN, ["worktree", "add", "-q", dir, branch]);
-		else if (remote && (await this.run(MAIN, ["rev-parse", "-q", "--verify", `refs/remotes/${remote}/${branch}`])).code === 0) await this.ok(MAIN, ["worktree", "add", "-q", "-b", branch, dir, `${remote}/${branch}`]);
-		else throw new GitError(`branch ${branch} is gone`);
-	}
-
-	private async dropWorktree(name: string): Promise<void> {
-		const dir = this.wt(name);
 		await this.run(MAIN, ["worktree", "remove", "--force", dir]);
 		rmSync(dir, { recursive: true, force: true });
 		await this.run(MAIN, ["worktree", "prune"]);
+		mkdirSync(join(dir, ".."), { recursive: true });
+		const local = (await this.run(MAIN, ["rev-parse", "-q", "--verify", `refs/heads/${branch}`])).code === 0;
+		if (local) await this.ok(MAIN, ["worktree", "add", "-q", dir, branch]);
+		else if (remote && (await this.run(MAIN, ["rev-parse", "-q", "--verify", `refs/remotes/${remote}/${branch}`])).code === 0) {
+			await this.ok(MAIN, ["worktree", "add", "-q", "--track", "-b", branch, dir, `${remote}/${branch}`]);
+			this.log(`git: ${branch} checked out from ${remote}/${branch}`);
+		} else {
+			await this.ok(MAIN, ["worktree", "add", "-q", "-b", branch, dir, await this.head(MAIN)]);
+			this.log(`git: started ${branch} from ${this.branch}`);
+		}
 	}
 
-	async deleteBranch(name: string): Promise<void> {
-		await this.dropWorktree(name);
-		await this.run(MAIN, ["branch", "-D", this.branchOf(name)]);
+	/** The best common ancestor of two refs, or undefined. */
+	async mergeBase(a: string, b: string): Promise<string | undefined> {
+		const r = await this.run(MAIN, ["merge-base", this.branchOf(a), this.branchOf(b)]);
+		return r.code === 0 ? r.stdout.toString().trim() || undefined : undefined;
 	}
 
 	/**
@@ -347,21 +340,5 @@ export class Repo {
 		if (!branches.length) return;
 		const r = await this.run(MAIN, ["push", "-q", ...(force ? ["--force"] : []), remote, ...branches.map((b) => `refs/heads/${b}:refs/heads/${b}`)], { timeoutMs: 90_000 });
 		if (r.code !== 0) throw new GitError(`push: ${r.stderr.trim().split("\n").pop() || `exit ${r.code}`}`);
-	}
-
-	/** Review branches the remote has. */
-	async remoteReviews(remote: string): Promise<string[]> {
-		const r = await this.run(MAIN, ["ls-remote", "--heads", remote, `refs/heads/${REVIEW_PREFIX}*`], { timeoutMs: 60_000 });
-		if (r.code !== 0) throw new GitError(`ls-remote: ${r.stderr.trim().split("\n").pop() || `exit ${r.code}`}`);
-		return r.stdout
-			.toString()
-			.split("\n")
-			.map((l) => /refs\/heads\/(.+)$/.exec(l)?.[1])
-			.filter((b): b is string => !!b);
-	}
-
-	async pushDelete(remote: string, branches: string[]): Promise<void> {
-		if (!branches.length) return;
-		await this.run(MAIN, ["push", "-q", remote, ...branches.map((b) => `:refs/heads/${b}`)], { timeoutMs: 90_000 });
 	}
 }

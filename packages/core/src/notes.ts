@@ -5,8 +5,8 @@
  * (`scopes/<scope>/notes/<slug>.md`: front matter + body): a one-line
  * statement (the title — it is also the line agents see in their context), the
  * specifics (body), how it reaches agents (index) and the evidence behind it.
- * The approved branch holds approved memory; a dream writes its proposals to a
- * review branch.
+ * The approved branch holds approved memory; a dream writes its proposals to
+ * the dreams branch.
  */
 
 import { randomBytes } from "node:crypto";
@@ -23,11 +23,12 @@ export type EvidenceKind = (typeof EVIDENCE_KINDS)[number];
 
 export interface Evidence {
 	/**
-	 * Where it comes from: a pi session id, `inbox:<id>`, `review:<comment id>`
-	 * (a comment left in a review) or `manual` (a hand edit).
+	 * Where it comes from: a pi session id, `inbox:<id>` (an inbox item),
+	 * `comment:<id>` (a review comment a dream applied), `review` (the reviewer
+	 * edited the proposal before accepting it) or `manual` (a hand edit).
 	 */
 	s: string;
-	/** Entry ids (or comment ids). */
+	/** Entry ids of the session (empty for the others). */
 	e: string[];
 	date?: string;
 	/** When the cited entries were written (ISO, minute precision, UTC); the latest of them. */
@@ -108,9 +109,9 @@ export function uuidV7Time(id: string): number | undefined {
 	return Number.parseInt(hex.slice(0, 12), 16);
 }
 
-/** Evidence that is not a pi session: inbox items, review comments, hand edits. */
+/** Evidence that is not a pi session: inbox items, review comments, the reviewer's and hand edits. */
 export function isSessionEvidence(e: Pick<Evidence, "s">): boolean {
-	return !/^(inbox:|review:|manual)/.test(e.s);
+	return !/^(inbox:|comment:|review$|manual$)/.test(e.s);
 }
 
 /**

@@ -3,8 +3,8 @@
  * started by the wierd-memory server.
  *
  * 1. ask the server what to work on: settings, which sessions were read, the
- *    inbox, the notes (approved + what the open review already proposes), the
- *    review comments not applied yet
+ *    inbox, the notes (approved + what is already proposed: the dreams branch),
+ *    the review comments not applied yet
  * 2. rebuild digests of changed sessions (the search corpus)
  * 3. summarize pending sessions into cards (cheap model, cached)
  * 4. review pass: turn review comments into operations
@@ -12,7 +12,7 @@
  *    hits from older sessions; cited evidence is looked up in the raw
  *    sessions; an independent model checks every operation against it
  * 6. code applies what passed to an in-memory copy of the notes
- * 7. hand the result to the server: it writes the changes to the review
+ * 7. hand the result to the server: it writes the changes to the dreams
  *    branch, where they wait for the user — nothing becomes memory here
  */
 
@@ -365,11 +365,11 @@ async function resolveRefs(refs: EvidenceRef[], deps: EvidenceDeps): Promise<{ e
 			evidence.push({ s: ref.s, e: [], date: item.ts.slice(0, 10), at: isoMinute(item.ts), kind: item.source === "user" ? "user" : "inbox" });
 			continue;
 		}
-		if (ref.s.startsWith("review:")) {
-			const comment = ref.e.map((id) => deps.comments.get(id)).find(Boolean);
-			if (!comment) return fail(`unknown review comment ${ref.e.join(",")}`);
+		if (ref.s.startsWith("comment:")) {
+			const comment = deps.comments.get(ref.s.slice(8));
+			if (!comment) return fail(`unknown review comment ${ref.s}`);
 			parts.push(`--- review comment ${comment.id} by ${comment.author} (${comment.at}) ---`, comment.body);
-			evidence.push({ s: `review:${comment.reviewId}`, e: [comment.id], date: comment.at.slice(0, 10), at: isoMinute(comment.at), kind: "reviewer" });
+			evidence.push({ s: ref.s, e: [], date: comment.at.slice(0, 10), at: isoMinute(comment.at), kind: "reviewer" });
 			continue;
 		}
 		const file = findSessionFile(deps, ref.s);
@@ -431,9 +431,11 @@ async function newerNoteEvidence(note: Note, opEvidence: Evidence[], deps: Evide
 	if (since === undefined) return undefined;
 	const newer: Array<{ e: Evidence; t: number; excerpts: string }> = [];
 	for (const old of note.evidence) {
-		if (old.s === "manual" || old.s.startsWith("review:")) {
+		// The user's own word: a hand edit, an edit before accepting, a review comment a dream applied.
+		if (old.s === "manual" || old.s === "review" || old.s.startsWith("comment:")) {
+			const what = old.s === "manual" ? "the user edited this note by hand" : old.s.startsWith("comment:") ? "the note was changed on the user's review comment" : "the user edited this note before accepting it";
 			const t = evidenceTime(old, startOf);
-			if (t !== undefined && t > since) newer.push({ e: old, t, excerpts: `--- ${old.s === "manual" ? "the user edited this note by hand" : "the user edited or approved this note in a review"} at ${old.at ?? old.date ?? "?"} ---` });
+			if (t !== undefined && t > since) newer.push({ e: old, t, excerpts: `--- ${what} at ${old.at ?? old.date ?? "?"} ---` });
 			continue;
 		}
 		const got = old.e.length || old.s.startsWith("inbox:") ? await resolveRefs([{ s: old.s, e: old.e }], deps) : undefined;
@@ -679,12 +681,12 @@ export async function dream(runId: string, deps: DreamDeps): Promise<DreamOutcom
 	const prompt = (name: "cards" | "curator" | "review" | "verify", vars: { charter?: string } = {}) =>
 		systemPrompt(name, { language: cfg.language, charter: vars.charter, globalBudget: cfg.budgets.globalTokens, projectBudget: cfg.budgets.projectTokens }, w.prompts[name]);
 	const blank = (): DreamSubmit => ({ runId, status: "noop", changes: { notes: [], removed: [], scopes: [], skills: [] }, votes: {}, report: emptyReport(runId, cfg), marks: {}, inboxDone: [], commentsDone: [], agents: [], sessions: 0, cost: 0 });
-	log(`dream ${runId} (${kind}) — ${w.notes.length} notes, ${w.inbox.length} inbox item(s)${w.review ? `, open review ${w.review.id} with ${w.pending.length} pending note(s)` : ""}`);
+	log(`dream ${runId} (${kind}) — ${w.notes.length} notes, ${w.inbox.length} inbox item(s)${w.pending.length ? `, ${w.pending.length} proposed note(s) not decided yet` : ""}`);
 
 	// 2. digests
 	const files = listSessionFiles();
 	const digests = await updateDigests(files, P, log, signal);
-	const feedback: ReviewComment[] = w.review?.comments ?? [];
+	const feedback: ReviewComment[] = w.comments ?? [];
 	if (feedback.length) log(`${feedback.length} review comment(s) to apply`);
 	if (kind === "reindex") return { status: "noop", result: await api.submit(blank()), sessions: 0, cost: 0 };
 	if (kind === "review" && !feedback.length) {
@@ -750,7 +752,7 @@ export async function dream(runId: string, deps: DreamDeps): Promise<DreamOutcom
 	).filter((c): c is Card => !!c);
 	save("cards.json", cards);
 
-	// The notes this dream works on: approved memory plus what the open review proposes.
+	// The notes this dream works on: approved memory plus what is still proposed.
 	const ws = new Workspace(w.notes, date, { pending: w.pending, scopes: w.scopes });
 	const titleAtStart = new Map(w.notes.map((n) => [n.id, n.title]));
 	const changes: ReportChange[] = [];
@@ -765,9 +767,8 @@ export async function dream(runId: string, deps: DreamDeps): Promise<DreamOutcom
 	const edeps: EvidenceDeps = { sessions, fileBySession, inboxById: new Map(inbox.map((i) => [i.id, i])), comments: new Map(feedback.map((c) => [c.id, c])) };
 
 	// 4. review pass
-	if (feedback.length && w.review) {
+	if (feedback.length) {
 		const input = {
-			review: w.review.id,
 			comments: feedback.map((c) => ({ id: c.id, author: c.author, at: c.at, ...(c.noteId ? { note: c.noteId } : {}), body: c.body })),
 			scopes: Object.fromEntries(
 				[...ws.notes].map(([sc, ns]) => [
@@ -780,13 +781,16 @@ export async function dream(runId: string, deps: DreamDeps): Promise<DreamOutcom
 		save("review.json", { input, parsed });
 		problems.push(...parsed.problems.map((p) => `review: ${p}`));
 		unhandled.push(...parsed.unhandled);
+		// The comments an operation cites (`comment:<id>`).
+		const commentsCited = (op: Op) => [...new Set(op.evidence.flatMap((r) => (r.s.startsWith("comment:") ? [r.s.slice(8)] : [])).filter((id) => edeps.comments.has(id)))];
 		for (const op of parsed.ops) {
 			if (op.op === "agents_md") {
-				unhandled.push({ comment: op.evidence[0]?.e[0] ?? "?", reason: "AGENTS.md changes from review comments are not supported" });
+				unhandled.push({ comment: commentsCited(op)[0] ?? "?", reason: "AGENTS.md changes from review comments are not supported" });
 				continue;
 			}
-			const cited = op.evidence.flatMap((r) => r.e).filter((id) => edeps.comments.has(id));
-			const evidence: Evidence[] = [{ s: `review:${w.review.id}`, e: cited.length ? [...new Set(cited)] : [], date, at: isoMinute(Date.now()), kind: "reviewer" }];
+			// One piece of evidence per comment the operation is made on; one that cites none is made on them all.
+			const cited = commentsCited(op);
+			const evidence: Evidence[] = (cited.length ? cited : feedback.map((c) => c.id)).map((id) => ({ s: `comment:${id}`, e: [], date, at: isoMinute(Date.now()), kind: "reviewer" }));
 			const res = applyOp(ws, op, { evidence });
 			if (!res.ok) rejected.push({ ref: op.ref, op: op.op, title: opTitle(op), reason: res.reason });
 			else changes.push({ ...res.change, rationale: op.rationale, evidence, source: "reviewer" });

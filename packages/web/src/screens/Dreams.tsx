@@ -87,7 +87,7 @@ function DreamsHome() {
 					</div>
 				</div>
 				<div className="row-actions">
-					<Button busy={busy === "start:review"} disabled={!!running || !!busy} onClick={() => void start("review", "A dream is applying the review comments")} title="Only applies the comments left in the open review; reads no new sessions">
+					<Button busy={busy === "start:review"} disabled={!!running || !!busy} onClick={() => void start("review", "A dream is applying the review comments")} title="Only applies the comments left in Review; reads no new sessions">
 						Apply review comments
 					</Button>
 					<Button busy={busy === "start:reindex"} disabled={!!running || !!busy} onClick={() => void start("reindex", "Rebuilding the search index")} title="Rebuilds the digests of past sessions that memory_search looks through; no model calls for notes">
@@ -297,9 +297,9 @@ function RunPage({ id }: { id: string }) {
 					{r.opts?.maxSessions ? ` · max ${r.opts.maxSessions} sessions` : ""}
 					{r.opts?.sinceDays ? ` · ${r.opts.sinceDays} days back` : ""}
 				</div>
-				{r.reviewId ? (
+				{r.kind !== "dry" && r.status === "ok" && ((r.report?.items?.length ?? 0) > 0 || (r.report?.agents?.length ?? 0) > 0) ? (
 					<div>
-						Its proposals went to review <a href={href("review", r.reviewId)}>{r.reviewId}</a>.
+						Its proposals went to <a href={href("review")}>Review</a>.
 					</div>
 				) : null}
 				{r.error ? (

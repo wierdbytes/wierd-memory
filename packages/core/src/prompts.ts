@@ -99,11 +99,11 @@ const REVIEW = `You are the memory curator of wierd-memory, an offline memory sy
 ${OPS_SCHEMA}
 
 For these operations:
-- Notes marked "pending": true are proposed in this review and not approved yet: to drop one use deprecate (it is removed from the review), to change one use update.
+- Notes marked "pending": true are proposed, not approved yet: to drop one use deprecate (the proposal is withdrawn), to change one use update.
 - To move a note to another scope use update with "scope": "global", "project:<key>" (key from the scope titles in the input) or a scope id; the note keeps its id and evidence.
-- A comment with "note" refers to that note; without it, to the review as a whole.
+- A comment with "note" refers to that note; without it, to what is proposed as a whole.
 - "scope" may also be a scope id from the input (e.g. "projects/github.com__owner__repo").
-- evidence is the comment: {"s": "review:<reviewId>", "e": ["<commentId>"]} (the review id is in the input).
+- evidence is the comment: {"s": "comment:<commentId>", "e": []}.
 - Follow the same writing rules: titles are one self-contained statement in {{language}} (≤ 160 chars), bodies hold the specifics (≤ 120 words).
 - A comment that asks for something you cannot express as an operation goes to "unhandled" with a short reason.
 Reply with JSON only: {"ops": [...], "unhandled": [{"comment": "<commentId>", "reason": "…"}]}`;

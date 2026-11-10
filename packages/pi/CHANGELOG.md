@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.1.2] - 2026-11-10
+
+### Changed
+
+- `/dream status`: shows what waits for a decision in the one review (no review ids); needs a wierd-memory server with the `dreams` branch.
+
 ## [0.1.1] - 2026-11-10
 
 ### Removed

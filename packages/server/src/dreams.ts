@@ -9,7 +9,7 @@
  *
  * The runner asks this server what to work on (`GET /api/dream/workspace`),
  * reads the new sessions, and hands back what it proposes
- * (`POST /api/dream/submit`); the server writes that to the review branch.
+ * (`POST /api/dream/submit`); the server writes that to the dreams branch.
  * The server only schedules, starts, watches and stops the process, and keeps
  * its log (`.local/logs/<run>.log` in the memory repository).
  *
@@ -277,9 +277,9 @@ export class Dreams {
 		const run = await state.run(runId);
 		if (!run) throw notFound(`run ${runId}`);
 		if (run.status !== "running") throw new HttpError(409, `run ${runId} is ${run.status}`);
-		const review = await state.openReview();
-		if (review) await this.app.lock(() => this.app.reviews.sync(review));
-		const ref = review?.branch ?? MAIN;
+		// What the dream works on: approved memory plus what is still proposed, in step with the approved branch.
+		await this.app.lock(() => this.app.reviews.sync());
+		const ref = this.app.reviewBranch;
 		const opts = run.opts as { sinceDays?: number; maxSessions?: number };
 		let cutoff = await state.get<number>("cutoffMs");
 		if (cutoff === undefined) {
@@ -297,7 +297,7 @@ export class Dreams {
 			state.marks(),
 			state.rejectedTitles(40),
 			state.inbox("pending"),
-			review ? state.comments(review.id) : Promise.resolve([]),
+			state.comments(),
 			state.agentsProposals({ status: "pending" }),
 		]);
 		return {
@@ -308,7 +308,7 @@ export class Dreams {
 			home: paths.home,
 			state: { cutoffMs: cutoff, sessions: marks, rejected },
 			inbox,
-			review: review ? { id: review.id, comments: comments.filter((c) => !c.processedRun) } : null,
+			comments: comments.filter((c) => !c.processedRun).map(({ processedAt: _at, ...c }) => c),
 			notes,
 			pending: notes.filter((n) => !mainIds.has(n.id)).map((n) => n.id),
 			scopes,

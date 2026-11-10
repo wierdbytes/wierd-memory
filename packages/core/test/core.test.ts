@@ -102,8 +102,8 @@ describe("applyOp", () => {
 		expect(w.all()).toEqual([]);
 		expect(w.changes()).toEqual({ notes: [], removed: [], scopes: [], skills: [] });
 
-		// a pending note that came from the open review is reported as removed
-		const pending = note("m-0000bb", "From the open review");
+		// a pending note proposed by an earlier dream is reported as removed
+		const pending = note("m-0000bb", "Proposed earlier");
 		const w2 = new Workspace([pending], DATE, { pending: [pending.id] });
 		applyOp(w2, { op: "deprecate", ref: "b", id: pending.id, rationale: "", evidence: [] }, { evidence: [] });
 		expect(w2.changes().removed.map((n) => n.id)).toEqual([pending.id]);
@@ -343,6 +343,6 @@ describe("misc", () => {
 	it("fills prompt placeholders and takes overrides", () => {
 		expect(systemPrompt("curator", { language: "Russian", charter: "CH", globalBudget: 1, projectBudget: 2 })).toContain("CH");
 		expect(systemPrompt("cards", { language: "Russian" }, "custom {{language}}")).toBe("custom Russian");
-		expect(systemPrompt("review", { language: "English" })).toContain("review:<reviewId>");
+		expect(systemPrompt("review", { language: "English" })).toContain(`{"s": "comment:<commentId>", "e": []}`);
 	});
 });

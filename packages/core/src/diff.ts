@@ -1,5 +1,5 @@
 /**
- * What a review branch changes in memory, and how to keep it in step with `main`.
+ * What the dreams branch changes in memory, and how to keep it in step with `main`.
  *
  * `diffNotes(base, head)` compares two sets of notes by id and names each
  * difference the way a reviewer thinks about it: a new note, an edit, a move
@@ -10,7 +10,7 @@
  *
  * `rebaseNotes(base, main, branch)` is a three-way merge by column: what
  * `main` changed since `base` is carried into the branch wherever the branch
- * did not change the same thing itself. The review branch is thus always
+ * did not change the same thing itself. The dreams branch is thus always
  * "main + what is still proposed".
  */
 

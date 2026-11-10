@@ -7,7 +7,7 @@ import type { Evidence, EvidenceInfo } from "@wierd-memory/core";
 import { useEffect, useState } from "react";
 import { api } from "../api.ts";
 import { CopyButton, Icon, Spinner } from "../ui.tsx";
-import { ago, clip, cls, errorText, EVIDENCE_KIND, fmtDay } from "../util.ts";
+import { ago, clip, cls, errorText, EVIDENCE_KIND, fmtDateTime, fmtDay } from "../util.ts";
 
 const cache = new Map<string, Promise<EvidenceInfo>>();
 
@@ -42,11 +42,13 @@ function useEvidence(list: readonly Evidence[], on: boolean): { info?: EvidenceI
 	return state.key === key ? state : {};
 }
 
-type SourceKind = "session" | "inbox" | "review" | "manual";
+/** `comment`: a review comment a dream applied (`comment:<id>`); `review`: the user edited the proposal before accepting. */
+type SourceKind = "session" | "inbox" | "comment" | "review" | "manual";
 
 function sourceKind(e: Pick<Evidence, "s">): SourceKind {
 	if (e.s.startsWith("inbox:")) return "inbox";
-	if (e.s.startsWith("review:")) return "review";
+	if (e.s.startsWith("comment:")) return "comment";
+	if (e.s === "review") return "review";
 	if (e.s === "manual" || e.s.startsWith("manual")) return "manual";
 	return "session";
 }
@@ -55,8 +57,10 @@ function sourceTitle(e: Evidence, info: EvidenceInfo | undefined, titles: Record
 	switch (sourceKind(e)) {
 		case "inbox":
 			return "Inbox item";
-		case "review":
+		case "comment":
 			return "Review comment";
+		case "review":
+			return "Your edit in Review";
 		case "manual":
 			return "Hand edit";
 		default: {
@@ -67,7 +71,9 @@ function sourceTitle(e: Evidence, info: EvidenceInfo | undefined, titles: Record
 }
 
 function kindLabel(e: Evidence): string {
-	const k = e.kind ?? (sourceKind(e) === "manual" ? "manual" : sourceKind(e) === "inbox" ? "inbox" : sourceKind(e) === "review" ? "reviewer" : "");
+	const fallback: Record<SourceKind, string> = { manual: "manual", inbox: "inbox", comment: "reviewer", review: "edited", session: "" };
+	// The server marks both a comment and an edit as `reviewer`: the source tells them apart.
+	const k = sourceKind(e) === "review" ? "edited" : (e.kind ?? fallback[sourceKind(e)]);
 	return k ? (EVIDENCE_KIND[k] ?? k) : "";
 }
 
@@ -97,6 +103,7 @@ function Cited({ ev, info, error }: { ev: Evidence; info?: EvidenceInfo; error?:
 	if (error) return <div className="ev-note ev-error">Could not load the lines: {error}</div>;
 	const kind = sourceKind(ev);
 	if (kind === "manual") return <div className="ev-note">Written or edited by hand.</div>;
+	if (kind === "review") return <div className="ev-note">You edited the proposal before accepting it.</div>;
 	if (!info)
 		return (
 			<div className="ev-note">
@@ -107,7 +114,18 @@ function Cited({ ev, info, error }: { ev: Evidence; info?: EvidenceInfo; error?:
 		const item = info.inbox[ev.s.slice("inbox:".length)];
 		return item ? <Line role={item.source === "user" ? "user" : "agent"} text={item.text} /> : <div className="ev-note">The inbox item is gone.</div>;
 	}
-	if (kind === "review") return <div className="ev-note">A comment left in a review ({ev.e.join(", ") || ev.s.slice(7)}).</div>;
+	if (kind === "comment") {
+		const c = info.comments?.[ev.s.slice("comment:".length)];
+		if (!c) return <div className="ev-note">The review comment is gone.</div>;
+		return (
+			<>
+				<Line role="user" text={c.body} />
+				<div className="ev-note">
+					{c.author} · {fmtDateTime(c.at)}
+				</div>
+			</>
+		);
+	}
 	const s = info.sessions[ev.s];
 	if (!s || s.missing) return <div className="ev-note">This session has no digest (it may have been deleted): the lines cannot be shown.</div>;
 	if (!ev.e.length) return <div className="ev-note">The whole session, no particular lines.</div>;

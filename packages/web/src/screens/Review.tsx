@@ -1,11 +1,12 @@
 /**
- * Review: what dreams propose, decided item by item — accept, edit by hand
- * and accept, or reject — with bulk actions for the rest.
+ * Review: everything dreams propose waits here, on one branch, until decided —
+ * item by item (accept, edit by hand and accept, or reject) or in bulk. There is
+ * one review; it never opens or closes.
  */
 
-import type { NoteEdit, ReviewComment, ReviewDecision, ReviewItem, ReviewSummary, ReviewView, RunInfo, ScopeInfo } from "@wierd-memory/core";
+import type { AgentsProposal, NoteEdit, ReviewComment, ReviewDecision, ReviewItem, ReviewView, RunInfo, ScopeInfo } from "@wierd-memory/core";
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
-import { api } from "../api.ts";
+import { ApiError, api } from "../api.ts";
 import type { ScopeOption } from "../components/NoteForm.tsx";
 import { type Busy, go, href, useBusy, useData, useHotkeys, useStatus } from "../hooks.ts";
 import { Button, Callout, Chip, confirmDialog, Empty, Fold, Icon, LoadState, toast } from "../ui.tsx";
@@ -14,42 +15,28 @@ import { AgentsCard, AgentsDone, CommentForm, Comments, ItemCard } from "./Revie
 
 type Mode = { key: string; what: "edit" | "reject" | "comment" } | null;
 
-export function ReviewScreen({ arg }: { arg?: string }) {
-	return arg ? <PastReview id={arg} /> : <CurrentReview />;
-}
-
-// ── the open review ──────────────────────────────────────────────────────
-
-function CurrentReview() {
+export function ReviewScreen() {
 	const review = useData(() => api.review(), ["review"]);
 	const scopes = useData(() => api.scopes(), ["scopes"]);
-	/** The review that was just finished here: shown as "all done" until another one opens. */
-	const [finished, setFinished] = useState<ReviewView | null>(null);
 	const actions = useBusy();
-
-	/** Take the answer of an action: the review as it is now, closed, or gone. */
-	const settle = async (prev: ReviewView, next: ReviewView | null) => {
-		if (next && next.status === "open") return review.set(next);
-		const closed = next ?? (await api.reviewById(prev.id).catch(() => null));
-		if (closed && closed.status !== "open") {
-			setFinished(closed);
-			review.set(null);
-		} else if (closed) review.set(closed);
-	};
-
 	if (review.data === undefined) return <LoadState error={review.error} loading={review.loading} reload={review.reload} />;
-	if (review.data) return <OpenReview view={review.data} scopes={scopes.data ?? []} actions={actions} settle={settle} />;
-	return <Idle finished={finished} />;
+	return <ReviewPage view={review.data} scopes={scopes.data ?? []} actions={actions} set={review.set} reload={review.reload} />;
 }
 
-interface OpenProps {
+interface PageProps {
 	view: ReviewView;
 	scopes: ScopeInfo[];
 	actions: Busy;
-	settle: (prev: ReviewView, next: ReviewView | null) => Promise<void> | void;
+	set: (next: ReviewView) => void;
+	reload: () => void;
 }
 
-function OpenReview({ view, scopes, actions, settle }: OpenProps) {
+/** The keys and versions of the items as shown: the server refuses (409) when any of them changed since. */
+function pick(items: readonly ReviewItem[]): { keys: string[]; versions: Record<string, string> } {
+	return { keys: items.map((i) => i.key), versions: Object.fromEntries(items.map((i) => [i.key, i.version])) };
+}
+
+function ReviewPage({ view, scopes, actions, set, reload }: PageProps) {
 	const { busy, run } = actions;
 	const [focus, setFocus] = useState<string | null>(null);
 	const [mode, setMode] = useState<Mode>(null);
@@ -59,6 +46,25 @@ function OpenReview({ view, scopes, actions, settle }: OpenProps) {
 	const cards = useRef(new Map<string, HTMLElement>());
 	const lastIndex = useRef(0);
 	const scrollTo = useRef(false);
+
+	/**
+	 * Send a decision and take the view it answers with. A 409 means something
+	 * shown changed or was decided meanwhile: nothing was decided, so reload
+	 * and show the server's word.
+	 */
+	const decide = async (fn: () => Promise<ReviewView>) => {
+		try {
+			set(await fn());
+		} catch (err) {
+			if (err instanceof ApiError && err.status === 409) {
+				reload();
+				// The server's word ends in "— reload" (for the CLI); here the reload has already happened.
+				const said = err.message.replace(/[\s—–-]*reload\.?\s*$/i, "");
+				throw new ApiError(`${said}. Nothing was decided; the review has been reloaded.`, 409);
+			}
+			throw err;
+		}
+	};
 
 	const main = useMemo(() => view.items.filter((i) => i.kind !== "confirmed"), [view.items]);
 	const confirmed = useMemo(() => view.items.filter((i) => i.kind === "confirmed"), [view.items]);
@@ -86,6 +92,7 @@ function OpenReview({ view, scopes, actions, settle }: OpenProps) {
 	const itemIds = useMemo(() => new Set(view.items.flatMap((i) => i.ids)), [view.items]);
 	const generalComments = view.comments.filter((c) => !c.noteId || !itemIds.has(c.noteId));
 	const waitingComments = view.comments.filter((c) => !c.processedRun).length;
+	const nothing = !view.items.length && !agentsOpen.length;
 
 	// Keep the focus on an item that exists: after a decision it moves to the next one.
 	useEffect(() => {
@@ -128,7 +135,7 @@ function OpenReview({ view, scopes, actions, settle }: OpenProps) {
 		run(
 			`accept:${items.length === 1 ? items[0].key : "many"}`,
 			async () => {
-				await settle(view, await api.accept(view.id, items.map((i) => i.key), edit));
+				await decide(() => api.accept(edit ? { ...pick(items), edit } : pick(items)));
 				setMode(null);
 			},
 			items.length === 1 ? `${edit ? "Edited and accepted" : "Accepted"}: ${clip(items[0].note.title, 60)}` : `Accepted ${plural(items.length, "item")}`,
@@ -138,7 +145,7 @@ function OpenReview({ view, scopes, actions, settle }: OpenProps) {
 		run(
 			`reject:${items.length === 1 ? items[0].key : "many"}`,
 			async () => {
-				await settle(view, await api.reject(view.id, items.map((i) => i.key), reason || undefined));
+				await decide(() => api.reject(reason ? { ...pick(items), reason } : pick(items)));
 				setMode(null);
 			},
 			items.length === 1 ? `Rejected: ${clip(items[0].note.title, 60)}` : `Rejected ${plural(items.length, "item")}`,
@@ -164,27 +171,29 @@ function OpenReview({ view, scopes, actions, settle }: OpenProps) {
 		if (ok) void accept(items);
 	};
 
+	/** "All" is the items on screen when the button was pressed: what a dream adds meanwhile stays to decide. */
 	const rejectAll = async () => {
+		const items = view.items;
+		if (!items.length) return;
 		const { ok, text } = await confirmDialog({
-			title: `Reject ${plural(view.items.length, "remaining item")}?`,
-			body: <p>They leave the review; rejected new notes are not proposed again without new evidence. AGENTS.md proposals stay.</p>,
-			confirm: `Reject ${view.items.length}`,
+			title: `Reject ${plural(items.length, "item")}?`,
+			body: <p>Rejected new notes are not proposed again without new evidence. AGENTS.md proposals stay, and so does anything a dream proposes meanwhile.</p>,
+			confirm: `Reject ${items.length}`,
 			danger: true,
 			input: { label: "Reason (optional)", placeholder: "why, for the next dream" },
 		});
-		if (ok) void reject(view.items, text);
+		if (ok) void reject(items, text);
 	};
 
 	const comment = (body: string, noteId?: string) =>
 		run(`comment:${noteId ?? ""}`, async () => {
-			await settle(view, await api.comment(view.id, body, noteId));
+			set(await api.comment(body, noteId));
 			setMode(null);
 		}, "Comment saved for the next dream");
 
 	const removeComment = (c: ReviewComment) =>
 		run(`uncomment:${c.id}`, async () => {
-			const next = await api.removeComment(view.id, c.id);
-			if (next) await settle(view, next);
+			set(await api.removeComment(c.id));
 		}, "Comment removed");
 
 	const applyComments = () => run("dream:review", () => api.startDream("review"), "A dream is applying the comments");
@@ -239,20 +248,19 @@ function OpenReview({ view, scopes, actions, settle }: OpenProps) {
 		<div className="page review">
 			<header className="page-head">
 				<div className="page-title-row">
-					<h1>{view.title}</h1>
-					<span className="dim">opened {ago(view.createdAt)}</span>
+					<h1>{nothing ? "Review" : `${view.pending} to decide`}</h1>
 				</div>
 				<div className="chips">
 					{Object.entries(view.counts).map(([kind, n]) => (
 						<Chip key={kind} tone={kindInfo(kind).tone}>
-							{kindInfo(kind).glyph} {n} {kindInfo(kind).label.toLowerCase()}
+							{kindInfo(kind).glyph} {plural(n ?? 0, kindInfo(kind).label.toLowerCase())}
 						</Chip>
 					))}
 					{agentsOpen.length ? <Chip tone="blue">{agentsOpen.length} AGENTS.md</Chip> : null}
 				</div>
 				<RunLines runs={view.runInfos} />
 				<div className="run-lines">
-					<span className="run-line" title="The git branch that holds approved memory plus what is proposed here">
+					<span className="run-line" title="The git branch dreams write to: approved memory plus everything still proposed">
 						<span>branch</span>
 						<span className="mono">{view.branch}</span>
 					</span>
@@ -273,27 +281,42 @@ function OpenReview({ view, scopes, actions, settle }: OpenProps) {
 				) : null}
 			</header>
 
-			<div className="review-bar">
-				<Progress pending={view.pending} accepted={view.accepted} rejected={view.rejected} />
-				<div className="review-bar-actions">
-					<span className="keys-hint" title="Keyboard: j / k or arrows move between items, a accepts, e edits, x rejects, c comments">
-						<kbd>j</kbd>
-						<kbd>k</kbd> move · <kbd>a</kbd> accept · <kbd>e</kbd> edit · <kbd>x</kbd> reject
-					</span>
-					<Button variant="primary" small disabled={!view.items.length || !!busy} busy={busy === "accept:many"} onClick={() => void acceptMany(view.items, "All remaining items")}>
-						Accept all remaining
-					</Button>
-					<Button small variant="danger" disabled={!view.items.length || !!busy} busy={busy === "reject:many"} onClick={() => void rejectAll()}>
-						Reject all remaining
-					</Button>
-				</div>
-			</div>
+			{nothing ? (
+				<>
+					<Empty title="Nothing to decide">When a dream proposes changes to memory, they show up here. Accept or reject any of them whenever you like; the rest waits.</Empty>
+					<DreamsPanel />
+				</>
+			) : null}
 
-			<Fold title="Comments for the dream" count={generalComments.length} open={commentsOpen ?? generalComments.length > 0} onToggle={setCommentsOpen} className="section">
-				<p className="dim">An instruction for the whole review (“merge the two notes about releases”, “write shorter titles”). The next dream applies comments; a comment on one note is left on its card.</p>
-				<Comments list={generalComments} busy={busy} onRemove={(c) => void removeComment(c)} />
-				<CommentForm busy={busy === "comment:"} onSubmit={(body) => void comment(body)} placeholder="A comment about the review as a whole" />
-			</Fold>
+			{view.items.length ? (
+				<div className="review-bar">
+					<div className="progress">
+						<div className="progress-text">
+							<b>{view.items.length}</b> {view.items.length === 1 ? "item" : "items"} shown
+						</div>
+					</div>
+					<div className="review-bar-actions">
+						<span className="keys-hint" title="Keyboard: j / k or arrows move between items, a accepts, e edits, x rejects, c comments">
+							<kbd>j</kbd>
+							<kbd>k</kbd> move · <kbd>a</kbd> accept · <kbd>e</kbd> edit · <kbd>x</kbd> reject
+						</span>
+						<Button variant="primary" small disabled={!view.items.length || !!busy} busy={busy === "accept:many"} onClick={() => void acceptMany(view.items, "All items shown")}>
+							Accept all
+						</Button>
+						<Button small variant="danger" disabled={!view.items.length || !!busy} busy={busy === "reject:many"} onClick={() => void rejectAll()}>
+							Reject all
+						</Button>
+					</div>
+				</div>
+			) : null}
+
+			{!nothing || generalComments.length ? (
+				<Fold title="Comments for the dream" count={generalComments.length} open={commentsOpen ?? generalComments.length > 0} onToggle={setCommentsOpen} className="section">
+					<p className="dim">An instruction about what is proposed as a whole (“merge the two notes about releases”, “write shorter titles”). The next dream applies comments; a comment on one note is left on its card.</p>
+					<Comments list={generalComments} busy={busy} onRemove={(c) => void removeComment(c)} showNote />
+					<CommentForm busy={busy === "comment:"} onSubmit={(body) => void comment(body)} placeholder="A comment about the proposals as a whole" />
+				</Fold>
+			) : null}
 			{waitingComments ? (
 				<div className="note-line">
 					{plural(waitingComments, "comment")} {waitingComments === 1 ? "waits" : "wait"} for a dream.
@@ -332,8 +355,8 @@ function OpenReview({ view, scopes, actions, settle }: OpenProps) {
 							key={a.id}
 							proposal={a}
 							busy={busy}
-							onApply={() => void run(`agents-apply:${a.id}`, async () => settle(view, await api.applyAgents(a.id)), `Applied to ${a.rel} in the working copy`)}
-							onReject={() => void run(`agents-reject:${a.id}`, async () => settle(view, await api.rejectAgents(a.id)), "Proposal rejected")}
+							onApply={() => void run(`agents-apply:${a.id}`, async () => set(await api.applyAgents(a.id)), `Applied to ${a.rel} in the working copy`)}
+							onReject={() => void run(`agents-reject:${a.id}`, async () => set(await api.rejectAgents(a.id)), "Proposal rejected")}
 						/>
 					))}
 				</section>
@@ -359,17 +382,12 @@ function OpenReview({ view, scopes, actions, settle }: OpenProps) {
 
 			{view.rejectedByCheck.length ? (
 				<Fold className="section" title="Rejected by the dream’s own fact check" count={view.rejectedByCheck.length}>
-					<p className="dim">Proposed by the dream and thrown out by its fact check before the review: nothing to decide here.</p>
+					<p className="dim">Proposed by a dream and thrown out by its own fact check before reaching you: nothing to decide here.</p>
 					<RejectedByCheck list={view.rejectedByCheck} />
 				</Fold>
 			) : null}
 
-			{view.decisions.length || agentsDone.length ? (
-				<Fold className="section" title="Decided in this review" count={view.decisions.length + agentsDone.length}>
-					<DecisionList decisions={view.decisions} scopeNames={view.scopeNames} />
-					<AgentsDone list={agentsDone} />
-				</Fold>
-			) : null}
+			<Recent key={nothing ? "idle" : "busy"} recent={view.recent} agentsDone={agentsDone} scopeNames={view.scopeNames} defaultOpen={nothing} />
 		</div>
 	);
 }
@@ -378,21 +396,6 @@ function summary(items: ReviewItem[]): string {
 	const by = new Map<string, number>();
 	for (const i of items) by.set(i.kind, (by.get(i.kind) ?? 0) + 1);
 	return [...by.entries()].map(([k, n]) => `${n} ${kindInfo(k).label.toLowerCase()}${n === 1 ? "" : "s"}`).join(", ");
-}
-
-function Progress({ pending, accepted, rejected }: { pending: number; accepted: number; rejected: number }) {
-	const total = Math.max(1, pending + accepted + rejected);
-	return (
-		<div className="progress">
-			<div className="progress-text">
-				<b>{pending}</b> to decide <span className="sep">·</span> <span className="text-green">{accepted} accepted</span> <span className="sep">·</span> <span className="text-red">{rejected} rejected</span>
-			</div>
-			<div className="progress-bar" role="progressbar" aria-valuemin={0} aria-valuemax={total} aria-valuenow={accepted + rejected}>
-				<span className="bar-green" style={{ width: `${(accepted / total) * 100}%` }} />
-				<span className="bar-red" style={{ width: `${(rejected / total) * 100}%` }} />
-			</div>
-		</div>
-	);
 }
 
 function RunLines({ runs }: { runs: RunInfo[] }) {
@@ -413,7 +416,7 @@ function RunLines({ runs }: { runs: RunInfo[] }) {
 	);
 }
 
-// ── lists shared by open and past reviews ────────────────────────────────
+// ── lists ────────────────────────────────────────────────────────────────
 
 function RejectedByCheck({ list }: { list: ReviewView["rejectedByCheck"] }) {
 	return (
@@ -449,10 +452,10 @@ function DecisionList({ decisions, scopeNames }: { decisions: ReviewDecision[]; 
 						<span className="row-main">
 							<span>{title}</span>
 							<span className="row-sub">
-								{[d.scope ? (scopeNames[d.scope] ?? d.scope) : "", d.noteId ?? "", d.reason ? `reason: ${d.reason}` : ""].filter(Boolean).join(" · ")}
+								{[d.scope ? (scopeNames[d.scope] ?? d.scope) : "", d.noteId ?? "", d.by ? `by ${d.by}` : "", d.reason ? `reason: ${d.reason}` : ""].filter(Boolean).join(" · ")}
 							</span>
 						</span>
-						<span className="dim nowrap" title={`${fmtDateTime(d.at)}${d.by ? ` via ${d.by}` : ""}`}>
+						<span className="dim nowrap" title={fmtDateTime(d.at)}>
 							{ago(d.at)}
 						</span>
 					</div>
@@ -462,31 +465,32 @@ function DecisionList({ decisions, scopeNames }: { decisions: ReviewDecision[]; 
 	);
 }
 
-function ReviewList({ reviews, skip }: { reviews: ReviewSummary[]; skip?: string }) {
-	const list = reviews.filter((r) => r.id !== skip);
-	if (!list.length) return <div className="dim">No past reviews yet.</div>;
+/** What was decided lately; "more" loads a longer stretch of the log. */
+function Recent({ recent, agentsDone, scopeNames, defaultOpen }: { recent: ReviewDecision[]; agentsDone: AgentsProposal[]; scopeNames: Record<string, string>; defaultOpen: boolean }) {
+	const [more, setMore] = useState<ReviewDecision[] | null>(null);
+	const { busy, run } = useBusy();
+	if (!recent.length && !agentsDone.length) return null;
+	const list = more && more.length > recent.length ? more : recent;
+	const loadMore = () => run("more", async () => setMore(await api.decisions(200)));
 	return (
-		<div className="rows">
-			{list.map((r) => (
-				<a key={r.id} className="row row-link" href={r.status === "open" ? href("review") : href("review", r.id)}>
-					<Chip tone={r.status === "merged" ? "green" : r.status === "open" ? "blue" : "dim"}>{r.status}</Chip>
-					<span className="row-main">{r.title}</span>
-					<span className="nowrap">
-						{r.status === "open" ? <span>{r.pending} to decide · </span> : null}
-						<span className="text-green">{r.accepted} accepted</span> · <span className="text-red">{r.rejected} rejected</span>
-					</span>
-					<span className="dim nowrap">{ago(r.closedAt ?? r.createdAt)}</span>
-				</a>
-			))}
-		</div>
+		<Fold className="section" title="Recently decided" count={recent.length + agentsDone.length} defaultOpen={defaultOpen}>
+			<DecisionList decisions={list} scopeNames={scopeNames} />
+			{!more && recent.length ? (
+				<div className="row-actions">
+					<Button variant="link" busy={busy === "more"} onClick={() => void loadMore()}>
+						more
+					</Button>
+				</div>
+			) : null}
+			<AgentsDone list={agentsDone} />
+		</Fold>
 	);
 }
 
-// ── no open review ───────────────────────────────────────────────────────
+// ── when nothing waits ───────────────────────────────────────────────────
 
-function Idle({ finished }: { finished: ReviewView | null }) {
+function DreamsPanel() {
 	const status = useStatus();
-	const reviews = useData(() => api.reviews(), ["reviews"]);
 	const { busy, run } = useBusy();
 	const dream = status?.dream;
 	const start = async () => {
@@ -494,125 +498,31 @@ function Idle({ finished }: { finished: ReviewView | null }) {
 		if (r) go("dreams");
 	};
 	return (
-		<div className="page review">
-			{finished ? (
-				<div className="done-banner">
-					<div className="done-mark">
-						<Icon name="check" size={22} />
-					</div>
-					<div>
-						<h1>All done</h1>
-						<p>
-							{finished.title} — <span className="text-green">{finished.accepted} accepted</span>, <span className="text-red">{finished.rejected} rejected</span>.{" "}
-							{finished.status === "merged" ? (
-								<>
-									Accepted changes are approved memory now{status ? <> (<span className="mono">{status.memver}</span>)</> : null}. <a href={href("memory")}>Open memory</a>
-								</>
-							) : (
-								"Nothing was accepted; memory is unchanged."
-							)}
-						</p>
-					</div>
-				</div>
+		<section className="section panel">
+			<h2>Dreams</h2>
+			{dream ? (
+				<>
+					<p>
+						{dream.running ? (
+							<>
+								A dream is running (started {ago(dream.running.startedAt)}). <a href={href("dreams")}>Watch it</a>
+							</>
+						) : dream.last ? (
+							<>
+								Last dream: <a href={href("dreams", dream.last.id)}>{ago(dream.last.finishedAt ?? dream.last.startedAt)}</a> — {dream.last.status === "error" ? <span className="text-red">failed: {dream.last.error}</span> : (dream.last.title ?? dream.last.status)}
+							</>
+						) : (
+							"No dream has run yet."
+						)}
+					</p>
+					<p className={dueText(dream.due, dream.scheduled).due ? "text-yellow" : "dim"}>{dueText(dream.due, dream.scheduled).text}</p>
+					<Button variant="primary" icon="moon" busy={busy === "dream"} disabled={!!dream.running} onClick={() => void start()}>
+						Dream now
+					</Button>
+				</>
 			) : (
-				<header className="page-head">
-					<h1>Review</h1>
-				</header>
+				<LoadState loading />
 			)}
-
-			{finished ? (
-				<Fold className="section" title="Decided in this review" count={finished.decisions.length} defaultOpen>
-					<DecisionList decisions={finished.decisions} scopeNames={finished.scopeNames} />
-					<AgentsDone list={finished.agents.filter((a) => a.status === "applied" || a.status === "rejected")} />
-				</Fold>
-			) : (
-				<Empty title="No review is open">Nothing waits for your decision. When a dream proposes changes to memory, they show up here.</Empty>
-			)}
-
-			<section className="section panel">
-				<h2>Dreams</h2>
-				{dream ? (
-					<>
-						<p>
-							{dream.running ? (
-								<>
-									A dream is running (started {ago(dream.running.startedAt)}). <a href={href("dreams")}>Watch it</a>
-								</>
-							) : dream.last ? (
-								<>
-									Last dream: <a href={href("dreams", dream.last.id)}>{ago(dream.last.finishedAt ?? dream.last.startedAt)}</a> — {dream.last.status === "error" ? <span className="text-red">failed: {dream.last.error}</span> : (dream.last.title ?? dream.last.status)}
-								</>
-							) : (
-								"No dream has run yet."
-							)}
-						</p>
-						<p className={dueText(dream.due, dream.scheduled).due ? "text-yellow" : "dim"}>{dueText(dream.due, dream.scheduled).text}</p>
-						<Button variant={finished ? "default" : "primary"} icon="moon" busy={busy === "dream"} disabled={!!dream.running} onClick={() => void start()}>
-							Dream now
-						</Button>
-					</>
-				) : (
-					<LoadState loading />
-				)}
-			</section>
-
-			<section className="section">
-				<h2>Past reviews</h2>
-				{reviews.data ? <ReviewList reviews={reviews.data} skip={finished?.id} /> : <LoadState error={reviews.error} loading={reviews.loading} reload={reviews.reload} />}
-			</section>
-		</div>
-	);
-}
-
-// ── a past review, read-only ─────────────────────────────────────────────
-
-function PastReview({ id }: { id: string }) {
-	const review = useData(() => api.reviewById(id), ["review", id]);
-	const v = review.data;
-	useEffect(() => {
-		if (v?.status === "open") go("review", undefined, true);
-	}, [v?.status]);
-	if (!v) {
-		return (
-			<div className="page review">
-				<a href={href("review")}>← Review</a>
-				<LoadState error={review.error} loading={review.loading} reload={review.reload} />
-			</div>
-		);
-	}
-	const agentsDone = v.agents.filter((a) => a.status === "applied" || a.status === "rejected");
-	return (
-		<div className="page review">
-			<a className="back" href={href("review")}>
-				← Review
-			</a>
-			<header className="page-head">
-				<div className="page-title-row">
-					<h1>{v.title}</h1>
-					<Chip tone={v.status === "merged" ? "green" : "dim"}>{v.status}</Chip>
-				</div>
-				<div className="dim">
-					opened {fmtDateTime(v.createdAt)}
-					{v.closedAt ? ` · closed ${fmtDateTime(v.closedAt)}` : ""} · <span className="text-green">{v.accepted} accepted</span> · <span className="text-red">{v.rejected} rejected</span> · read-only
-				</div>
-				<RunLines runs={v.runInfos} />
-			</header>
-			<section className="section">
-				<h2>Decisions</h2>
-				{v.decisions.length ? <DecisionList decisions={v.decisions} scopeNames={v.scopeNames} /> : <div className="dim">No decisions were recorded.</div>}
-				<AgentsDone list={agentsDone} />
-			</section>
-			{v.comments.length ? (
-				<section className="section">
-					<h2>Comments</h2>
-					<Comments list={v.comments} busy={null} />
-				</section>
-			) : null}
-			{v.rejectedByCheck.length ? (
-				<Fold className="section" title="Rejected by the dream’s own fact check" count={v.rejectedByCheck.length}>
-					<RejectedByCheck list={v.rejectedByCheck} />
-				</Fold>
-			) : null}
-		</div>
+		</section>
 	);
 }

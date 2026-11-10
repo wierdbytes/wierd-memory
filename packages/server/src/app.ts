@@ -11,7 +11,7 @@
  * - Edits made behind the server's back are taken in as well: a note file
  *   changed in an editor is committed ("edit by hand"), a commit made or
  *   pulled with git is noticed.
- * - Every change to approved memory is followed by: the open review branch
+ * - Every change to approved memory is followed by: the dreams branch
  *   brought in step, clients told (`rev`), a push to the remote.
  *
  * Mutations run one at a time (`lock`).
@@ -106,6 +106,8 @@ export class App {
 	cfg: WmemConfig;
 	readonly paths: HomePaths;
 	readonly repo: Repo;
+	/** The branch dreams write to (`memory.reviewBranch`): approved memory plus what is still proposed. */
+	readonly reviewBranch: string;
 	readonly mem: MemoryStore;
 	readonly state: StateStore;
 	readonly reviews: Reviews;
@@ -140,6 +142,7 @@ export class App {
 		this.paths = homePaths(home.home, this.cfg.memory.dir);
 		this.background = !opts.noSchedule;
 		this.repo = new Repo(this.paths.memory, this.cfg.memory.branch, () => this.identity, this.log);
+		this.reviewBranch = this.cfg.memory.reviewBranch;
 		this.mem = new MemoryStore(this.repo);
 		this.state = new StateStore(this.paths);
 		this.reviews = new Reviews(this);
@@ -153,20 +156,12 @@ export class App {
 		const email = (await run("git", ["config", "--global", "user.email"])) ?? `${name}@localhost`;
 		app.identity = `${name} <${email}>`;
 		await app.repo.ensure(app.cfg.memory.remote);
-		for (const dir of [app.paths.logs, app.paths.local, app.paths.dreamLogs, app.paths.digests, app.paths.cards, app.paths.runs, app.paths.reviews, app.paths.inbox]) mkdirSync(dir, { recursive: true });
+		for (const dir of [app.paths.logs, app.paths.local, app.paths.dreamLogs, app.paths.digests, app.paths.cards, app.paths.runs, app.paths.inbox]) mkdirSync(dir, { recursive: true });
 		await app.mem.ensureScope(MAIN, { id: GLOBAL_SCOPE });
 		app.remote.url = await app.repo.remoteUrl(app.cfg.memory.remote);
 		app.knownHead = await app.repo.head(MAIN);
-		// The open review's branch, checked out and as its last commit left it.
-		const open = await app.state.openReview();
-		if (open) {
-			try {
-				await app.repo.ensureWorktree(open.branch, app.cfg.memory.remote);
-			} catch (err) {
-				app.log(`review ${open.id}: ${err instanceof Error ? err.message : err} — the review is closed`);
-				await app.state.saveReview({ ...open, status: "closed", closedAt: new Date().toISOString() });
-			}
-		}
+		// The dreams branch, checked out and as its last commit left it (made from the approved one the first time).
+		await app.repo.ensureBranch(app.reviewBranch, app.cfg.memory.remote);
 		await app.lock(async () => undefined); // takes in whatever was edited while the server was down
 		await app.dreams.recover();
 		app.dreams.schedule();
@@ -307,22 +302,21 @@ export class App {
 
 	updateConfig(raw: unknown): WmemConfig {
 		const next = sanitize({ ...this.cfg, ...(raw as object) });
-		// The port, the repository's folder and the approved branch take effect on restart; everything else right away.
+		// The port, the repository's folder and the two branches take effect on restart; everything else right away.
 		saveConfig(next, this.paths.config);
-		this.cfg = { ...next, port: this.cfg.port, memory: { ...next.memory, dir: this.cfg.memory.dir, branch: this.cfg.memory.branch } };
+		this.cfg = { ...next, port: this.cfg.port, memory: { ...next.memory, dir: this.cfg.memory.dir, branch: this.cfg.memory.branch, reviewBranch: this.cfg.memory.reviewBranch } };
 		this.dreams.configChanged();
 		this.bump("config");
 		return next;
 	}
 
 	/**
-	 * After a commit on the approved branch: bring the open review in step,
+	 * After a commit on the approved branch: bring the dreams branch in step,
 	 * tell clients, push to the remote.
 	 */
 	async afterMainChange(): Promise<void> {
 		this.knownHead = await this.repo.head(MAIN);
-		const open = await this.state.openReview();
-		if (open) await this.reviews.sync(open);
+		await this.reviews.sync();
 		this.bump("memory");
 		this.pushSoon();
 	}
@@ -337,7 +331,7 @@ export class App {
 		this.pushTimer.unref?.();
 	}
 
-	/** Push the approved branch and the open review's; drop the remote branches of reviews that are over. */
+	/** Push the approved branch and the dreams branch. */
 	private async push(): Promise<void> {
 		const remote = this.cfg.memory.remote;
 		try {
@@ -349,12 +343,8 @@ export class App {
 			throw err;
 		}
 		try {
-			const reviews = await this.state.reviews(200);
-			const open = reviews.find((r) => r.status === "open");
-			if (open) await this.repo.push(remote, [open.branch], true);
-			const over = new Set(reviews.filter((r) => r.status !== "open").map((r) => r.branch));
-			const gone = (await this.repo.remoteReviews(remote)).filter((b) => over.has(b));
-			await this.repo.pushDelete(remote, gone);
+			// Only this server writes the dreams branch: the remote's copy is a backup and a place to look at it.
+			await this.repo.push(remote, [this.reviewBranch], true);
 			this.remote.lastPush = new Date().toISOString();
 			this.remote.error = undefined;
 			this.bump("remote");
@@ -515,7 +505,7 @@ export class App {
 			this.mem.scopes(MAIN),
 			this.state.inbox("pending"),
 			this.memver(),
-			this.reviews.openSummary(),
+			this.reviews.summary(),
 			this.dreams.status(1),
 		]);
 		return {
@@ -573,8 +563,7 @@ export class App {
 			const scope = input.scope?.trim() || GLOBAL_SCOPE;
 			await this.ensureScopeFor(scope);
 			const taken = await this.mem.noteIds(MAIN);
-			const open = await this.state.openReview();
-			if (open) for (const id of await this.mem.noteIds(open.branch)) taken.add(id);
+			for (const id of await this.mem.noteIds(this.reviewBranch)) taken.add(id);
 			const note = makeNote(
 				{
 					id: newNoteId(taken),

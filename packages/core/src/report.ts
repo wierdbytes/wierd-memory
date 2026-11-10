@@ -2,7 +2,7 @@
  * What a dream reports: the changes it proposed (with the rationale, the fact
  * check and the evidence behind each), what the fact check rejected, the
  * sessions it read and what it cost. The server stores it with the run; the
- * review joins it to the notes the review branch changes.
+ * review joins it to the notes the dreams branch changes.
  */
 
 import type { Stage } from "./config.ts";

@@ -4,6 +4,7 @@
  */
 
 import type {
+	AgentsProposal,
 	CommitInfo,
 	DreamStatus,
 	Evidence,
@@ -12,12 +13,13 @@ import type {
 	InboxKind,
 	Note,
 	NoteCreate,
-	NoteEdit,
 	NoteHistoryEntry,
 	NotePatch,
 	NoteView,
 	ReportData,
-	ReviewSummary,
+	ReviewAccept,
+	ReviewDecision,
+	ReviewReject,
 	ReviewView,
 	RunInfo,
 	ScopeInfo,
@@ -124,15 +126,16 @@ export const api = {
 	dismissInbox: (id: string) => request<{ ok: boolean }>("DELETE", `/api/inbox/${enc(id)}`),
 
 	// review
-	review: () => get<ReviewView | null>("/api/review"),
-	reviews: () => get<ReviewSummary[]>("/api/reviews"),
-	reviewById: (id: string) => get<ReviewView>(`/api/reviews/${enc(id)}`),
-	accept: (id: string, keys: string[], edit?: NoteEdit) => post<ReviewView>(`/api/reviews/${enc(id)}/accept`, edit ? { keys, edit } : { keys }),
-	reject: (id: string, keys: string[], reason?: string) => post<ReviewView>(`/api/reviews/${enc(id)}/reject`, reason ? { keys, reason } : { keys }),
-	comment: (id: string, body: string, noteId?: string) => post<ReviewView>(`/api/reviews/${enc(id)}/comments`, noteId ? { body, noteId } : { body }),
-	removeComment: (id: string, cid: string) => request<ReviewView | null>("DELETE", `/api/reviews/${enc(id)}/comments/${enc(cid)}`),
-	applyAgents: (id: string) => post<ReviewView | null>(`/api/agents/${enc(id)}/apply`),
-	rejectAgents: (id: string) => post<ReviewView | null>(`/api/agents/${enc(id)}/reject`),
+	review: () => get<ReviewView>("/api/review"),
+	/** Decisions, newest first. */
+	decisions: (limit = 200) => get<ReviewDecision[]>(`/api/review/decisions?limit=${limit}`),
+	/** With `versions` the server answers 409 when an item changed since it was shown; nothing is decided then. */
+	accept: (pick: ReviewAccept) => post<ReviewView>("/api/review/accept", pick),
+	reject: (pick: ReviewReject) => post<ReviewView>("/api/review/reject", pick),
+	comment: (body: string, noteId?: string) => post<ReviewView>("/api/review/comments", noteId ? { body, noteId } : { body }),
+	removeComment: (cid: string) => request<ReviewView>("DELETE", `/api/review/comments/${enc(cid)}`),
+	applyAgents: (id: string, edits?: AgentsProposal["edits"]) => post<ReviewView>(`/api/agents/${enc(id)}/apply`, edits === undefined ? {} : { edits }),
+	rejectAgents: (id: string) => post<ReviewView>(`/api/agents/${enc(id)}/reject`),
 
 	// dreams
 	dreams: (limit = 50) => get<DreamStatus>(`/api/dreams?limit=${limit}`),
