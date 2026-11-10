@@ -11,7 +11,6 @@ import type { DreamSubmit, EvidenceRef, InboxInput, NoteCreate, NoteEdit, NotePa
 import { GLOBAL_SCOPE, INBOX_KINDS, oneOf, projectScope, renderReport, resolveProject, defaultPrompt, PROMPT_NAMES, DEFAULT_GLOBAL_CHARTER, DEFAULT_PROJECT_CHARTER } from "@wierd-memory/core";
 import { type App, bad, HttpError, notFound, scopeShortName } from "./app.ts";
 import { MAIN } from "./git.ts";
-import { importPiDreamState } from "./importer.ts";
 
 type Handler = (ctx: Ctx) => Promise<unknown> | unknown;
 
@@ -336,11 +335,6 @@ route("DELETE", "/api/skills", async ({ app, q, actor }) => {
 });
 
 route("POST", "/api/sync", async ({ app }) => ({ message: await app.sync() }));
-
-route("POST", "/api/import", async ({ app, body }) => {
-	const b = await body<{ from?: string }>();
-	return importPiDreamState(app, { from: b.from });
-});
 
 // ── dispatch ─────────────────────────────────────────────────────────────
 

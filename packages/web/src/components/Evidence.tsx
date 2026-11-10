@@ -42,12 +42,11 @@ function useEvidence(list: readonly Evidence[], on: boolean): { info?: EvidenceI
 	return state.key === key ? state : {};
 }
 
-type SourceKind = "session" | "inbox" | "review" | "manual" | "pr";
+type SourceKind = "session" | "inbox" | "review" | "manual";
 
 function sourceKind(e: Pick<Evidence, "s">): SourceKind {
 	if (e.s.startsWith("inbox:")) return "inbox";
 	if (e.s.startsWith("review:")) return "review";
-	if (e.s.startsWith("pr#")) return "pr";
 	if (e.s === "manual" || e.s.startsWith("manual")) return "manual";
 	return "session";
 }
@@ -58,8 +57,6 @@ function sourceTitle(e: Evidence, info: EvidenceInfo | undefined, titles: Record
 			return "Inbox item";
 		case "review":
 			return "Review comment";
-		case "pr":
-			return `Pull request comment ${e.s}`;
 		case "manual":
 			return "Hand edit";
 		default: {
@@ -100,7 +97,6 @@ function Cited({ ev, info, error }: { ev: Evidence; info?: EvidenceInfo; error?:
 	if (error) return <div className="ev-note ev-error">Could not load the lines: {error}</div>;
 	const kind = sourceKind(ev);
 	if (kind === "manual") return <div className="ev-note">Written or edited by hand.</div>;
-	if (kind === "pr") return <div className="ev-note">A GitHub pull request comment (imported from pi-dream).</div>;
 	if (!info)
 		return (
 			<div className="ev-note">

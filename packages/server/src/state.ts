@@ -429,11 +429,6 @@ export class StateStore {
 		if (touched) this.save();
 	}
 
-	async setStats(id: string, stats: NoteStats): Promise<void> {
-		this.load().stats[id] = { helpful: stats.helpful, harmful: stats.harmful };
-		this.save();
-	}
-
 	// ── AGENTS.md proposals ──────────────────────────────────────────────
 
 	async agentsProposals(where: { status?: AgentsProposal["status"]; reviewId?: string } = {}): Promise<StoredAgents[]> {

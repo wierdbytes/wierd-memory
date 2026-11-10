@@ -157,7 +157,6 @@ export class App {
 		await app.mem.ensureScope(MAIN, { id: GLOBAL_SCOPE });
 		app.remote.url = await app.repo.remoteUrl(app.cfg.memory.remote);
 		app.knownHead = await app.repo.head(MAIN);
-		await app.absorbVotes();
 		// The open review's branch, checked out and as its last commit left it.
 		const open = await app.state.openReview();
 		if (open) {
@@ -322,22 +321,10 @@ export class App {
 	 */
 	async afterMainChange(): Promise<void> {
 		this.knownHead = await this.repo.head(MAIN);
-		await this.absorbVotes();
 		const open = await this.state.openReview();
 		if (open) await this.reviews.sync(open);
 		this.bump("memory");
 		this.pushSoon();
-	}
-
-	/**
-	 * pi-dream kept a note's usefulness votes in its file; here they live in the
-	 * state. Take over the ones not known yet, before a rewrite of the file drops them.
-	 */
-	private async absorbVotes(): Promise<void> {
-		const legacy = this.mem.legacyStats(MAIN);
-		if (!legacy.size) return;
-		const known = await this.state.stats();
-		for (const [id, s] of legacy) if (!known.has(id)) await this.state.setStats(id, s);
 	}
 
 	// ── the remote ───────────────────────────────────────────────────────

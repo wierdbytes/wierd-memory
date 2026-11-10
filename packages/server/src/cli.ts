@@ -235,11 +235,10 @@ dreams
   wmem dream schedule on|off          let the server dream on its own
 
 setup
-  wmem init --repo git@github.com:you/pi-memory.git --branch v2
-                                      clone the repository into ~/.wierd-memory/memory and make <branch> the approved one
-                                      (created from --from, default the remote's main branch, when it does not exist)
+  wmem init --repo git@github.com:you/pi-memory.git [--branch <name> [--from <ref>]]
+                                      clone the repository into ~/.wierd-memory/memory; its main branch (or --branch)
+                                      is approved memory (a branch that does not exist yet starts from --from, or HEAD)
   wmem sync                           exchange with the remote now: pull what it has, push
-  wmem import [--from ~/.pi/memory]   take over pi-dream's local state: sessions read, inbox, digests, settings
   wmem config [<key> [<value>]]       settings (e.g. schedule.enabled true)
   wmem herdr install                  install the Herdr mod
 
@@ -520,14 +519,6 @@ async function main(): Promise<void> {
 				return out(`scheduled dreams: ${on ? "on" : "off"}`);
 			}
 			throw new ApiFailure(400, `unknown: wmem dream ${mode}`);
-		}
-
-		case "import": {
-			const r = await api<Record<string, unknown> & { warnings: string[] }>("POST", "/api/import", { from: str(a.flags.from) });
-			return show(r, () => {
-				out(`from ${r.from}: ${r.sessions} sessions already read, ${r.inbox} inbox items, ${r.rejected} rejected titles${r.digests ? ", session digests copied" : ""}${r.settings ? ", settings taken from pi-dream" : ""}`);
-				for (const w of r.warnings) out(`⚠ ${w}`);
-			});
 		}
 
 		case "sync": {

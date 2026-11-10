@@ -289,7 +289,7 @@ export default class WierdMemory extends View {
     const list = card?.kind === "note" ? card.note.evidence : card?.kind === "review" ? card.item.evidence : null;
     if (!list?.length || this.evBusy || !this.api) return;
     const refs = list.filter((ev) => {
-      if (/^(pr#|review:|manual)/.test(ev.s)) return false;
+      if (/^(review:|manual)/.test(ev.s)) return false;
       if (ev.s.startsWith("inbox:")) return !(ev.s in this.ev);
       const have = this.ev[ev.s];
       return !have || (ev.e ?? []).some((id) => !(id in have.entries));

@@ -136,13 +136,12 @@ function msgModel(m: Record<string, unknown>): string | undefined {
 	return typeof m.provider === "string" && typeof m.model === "string" ? `${m.provider}/${m.model}` : undefined;
 }
 
-/** Custom entry type of our own records in a session (`pi-dream`: sessions from before wierd-memory). */
+/** Custom entry type of our own records in a session. */
 export const SESSION_EVENT = "wierd-memory";
-const INJECT_EVENTS = new Set([SESSION_EVENT, "pi-dream"]);
 
 /** Note ids an entry shows as injected (our own custom entries). */
 function injectedIds(e: RawEntry): string[] {
-	if (e.type !== "custom" || typeof e.customType !== "string" || !INJECT_EVENTS.has(e.customType)) return [];
+	if (e.type !== "custom" || typeof e.customType !== "string" || e.customType !== SESSION_EVENT) return [];
 	const d = e.data as { event?: string; ids?: unknown } | undefined;
 	return d?.event === "inject" && Array.isArray(d.ids) ? d.ids.filter((x): x is string => typeof x === "string") : [];
 }

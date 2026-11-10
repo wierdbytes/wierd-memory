@@ -189,9 +189,7 @@ function evidenceItem(m, t, ev, k, names) {
   const lines = [];
   let name = "";
   let open = null;
-  if (ev.s.startsWith("pr#")) {
-    name = `Comment on PR #${ev.s.slice(3)}`;
-  } else if (ev.s.startsWith("review:")) {
+  if (ev.s.startsWith("review:")) {
     name = "A comment left in a review";
   } else if (ev.s === "manual") {
     name = "Edited by hand";

@@ -32,7 +32,6 @@ import {
 	type Note,
 	NOTE_COLUMNS,
 	type NoteHistoryEntry,
-	type NoteStats,
 	PROMPT_NAMES,
 	sameNote,
 	type ScopeMeta,
@@ -58,8 +57,6 @@ interface Tree {
 	scopes: ScopeRow[];
 	skills: SkillRow[];
 	prompts: Record<string, string>;
-	/** Votes found in the files themselves (pi-dream kept them there). */
-	stats: Map<string, NoteStats>;
 }
 
 const PROJECT_CHARTER_FILE = "scopes/projects/_charter.md";
@@ -130,7 +127,7 @@ export class MemoryStore {
 	}
 
 	private build(source: Map<string, string>, fix?: (path: string, note: Note) => void): Tree {
-		const tree: Tree = { notes: [], paths: new Map(), files: new Set(), scopes: [], skills: [], prompts: {}, stats: new Map() };
+		const tree: Tree = { notes: [], paths: new Map(), files: new Set(), scopes: [], skills: [], prompts: {} };
 		const scopes = new Map<string, ScopeRow>([[GLOBAL_SCOPE, { id: GLOBAL_SCOPE, charter: null }]]);
 		const scope = (id: string) => {
 			let row = scopes.get(id);
@@ -152,7 +149,6 @@ export class MemoryStore {
 					pending.push({ path, note: n });
 					continue;
 				}
-				if (parsed.stats) tree.stats.set(n.id, parsed.stats);
 				tree.notes.push(n);
 				tree.paths.set(n.id, path);
 				if (parsed.incomplete) fix?.(path, n);
@@ -248,11 +244,6 @@ export class MemoryStore {
 	fileOf(id: string, ref: string = MAIN): string | undefined {
 		const rel = this.tree(ref).paths.get(id);
 		return rel ? join(this.repo.wt(ref), rel) : undefined;
-	}
-
-	/** Votes pi-dream kept in the note files of this branch. */
-	legacyStats(ref: string = MAIN): Map<string, NoteStats> {
-		return new Map(this.tree(ref).stats);
 	}
 
 	/**

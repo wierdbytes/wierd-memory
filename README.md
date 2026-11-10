@@ -1,4 +1,4 @@
-# wierd-mem
+# wierd-memory
 
 Long-term memory for [pi](https://pi.dev) agents, kept in a git repository of Markdown notes — with a review
 that lets you decide on every change by itself.
@@ -8,10 +8,8 @@ and drop things into an inbox. **Dreams** — background pi runs over your past 
 **Nothing a dream proposes becomes memory until you decide**: per change you can accept it, edit it by hand and
 accept, or reject it — in the web UI, in the Herdr panel, or from the command line.
 
-It is the successor of [`@wierdbytes/pi-dream`](https://github.com/wierdbytes/pi-wierd-stuff/tree/master/packages/dream):
-the same repository and note files, the same dream pipeline, the same tools for the agent. What changes is the
-review: a GitHub pull request can only be merged whole; here the server does the accepting, note by note, and
-GitHub is where the repository is backed up and can be looked at.
+The review is not a GitHub pull request, which can only be merged whole: the server does the accepting, note by
+note, and GitHub is where the repository is backed up and can be looked at.
 
 ```
  pi sessions ──► dream (headless pi: cards → curator → fact check) ──► review/<id> branch ──► you ──► approved branch
@@ -28,53 +26,34 @@ GitHub is where the repository is backed up and can be looked at.
 | `packages/pi` | The pi extension: memory injection, `memory_search` / `memory_read` / `memory_inbox`, `/dream`, `/memory`, `/remember`, and the dream runner the server starts. |
 | `packages/herdr-mod` | The Herdr app panel: memory of the focused pane's project, the open review, hand edits. |
 | `packages/core` | What they share: the note model, the index, search, the curator's operations, diff / three-way merge, API types. |
-| `~/.wierd-mem/` | `config.json`, `logs/`, and `memory/` — the git repository. |
+| `~/.wierd-memory/` | `config.json`, `logs/`, and `memory/` — the git repository. |
 
 ## Setup
 
 Needs [Bun](https://bun.sh), git and pi.
 
 ```sh
-cd ~/me/dev/wierd-mem && bun install
+cd ~/me/dev/wierd-memory && bun install
 ln -s "$PWD/bin/wmem" ~/.local/bin/wmem
 
-wmem init --repo git@github.com:you/pi-memory.git --branch v2 --from main
-                          # clone the repository into ~/.wierd-mem/memory; `v2` (started from `main` if it does
-                          # not exist yet) is the branch wierd-mem treats as approved memory.
-                          # Without --repo the server starts an empty local repository.
+wmem init --repo git@github.com:you/pi-memory.git
+                          # clone your memory repository into ~/.wierd-memory/memory; its `main` branch is
+                          # approved memory (`--branch <name>` for another one, `--from <ref>` to start it from
+                          # there if it does not exist yet). Without --repo the server starts an empty local repository.
 wmem service install      # launchd: the server starts at login and is restarted if it dies
                           # (or run it in a terminal: wmem serve)
 wmem status
 wmem open                 # http://127.0.0.1:7433
-```
 
-### Coming from pi-dream
-
-wierd-mem works on pi-dream's repository as it is — same files, same history. While you try it, give it its own
-branch (`--branch v2 --from main` above): pi-dream keeps `main` and its pull requests, wierd-mem keeps `v2` and its
-`review/…` branches, in a clone of its own (`~/.wierd-mem/memory`; `~/.pi/memory` is not touched).
-
-```sh
-wmem import                                   # pi-dream's local state: which sessions were read, the inbox,
-                                              # digests and cards, settings (run it again later: it only adds)
-git -C ~/.wierd-mem/memory merge origin/main  # whenever pi-dream approved something new: bring it into v2
-```
-
-To switch over for good:
-
-```sh
-pi remove npm:@wierdbytes/pi-dream            # the two must not be loaded together (same tool names)
-pi install ~/me/dev/wierd-mem/packages/pi     # absolute path
+pi install ~/me/dev/wierd-memory/packages/pi  # the pi extension (absolute path)
 wmem dream schedule on                        # let the server dream on its own (off until you say so)
 wmem herdr install                            # the Herdr panel (see packages/herdr-mod/README.md)
-# and, when v2 should become the repository's main branch:
-git -C ~/.wierd-mem/memory push origin v2:main && wmem config memory.branch main && wmem service restart
 ```
 
 ## How memory is kept
 
 ```
-~/.wierd-mem/memory/              the git repository; its approved branch is checked out here
+~/.wierd-memory/memory/           the git repository; its approved branch is checked out here
   scopes/global/                  what is true on this machine in every project
     charter.md                    what this memory is for (steers dreams)
     notes/<slug>.md               one note per file: front matter + body
@@ -136,8 +115,8 @@ merge commit, whose content is worked out note by note and field by field rather
 branch is always "approved + what is still proposed". You can look at the same thing with git or on GitHub:
 
 ```sh
-git -C ~/.wierd-mem/memory diff v2...review/r-20261109-50c2
-# https://github.com/<you>/pi-memory/compare/v2...review/r-20261109-50c2   (the link is in the review's header)
+git -C ~/.wierd-memory/memory diff main...review/r-20261109-50c2
+# https://github.com/<you>/pi-memory/compare/main...review/r-20261109-50c2   (the link is in the review's header)
 ```
 
 Dreams may also propose AGENTS.md / CLAUDE.md edits for a project; they wait in the same review, and accepting one
@@ -149,7 +128,7 @@ In the web UI, the Herdr panel and the CLI you can **turn a note off** (agents n
 not in search; dreams leave it alone and do not add the same thing again) and on, **edit** it, pin it, close or
 reopen it, move it to another scope, delete it, add one. Your own edits apply at once: one commit each, no review.
 
-Notes are files, so an editor works too: change `~/.wierd-mem/memory/scopes/…/notes/*.md` (or add a file — an
+Notes are files, so an editor works too: change `~/.wierd-memory/memory/scopes/…/notes/*.md` (or add a file — an
 id and dates are filled in) and the server commits it a moment later as `edit by hand`. A commit you make with git
 yourself, or pull, is taken as it is.
 
@@ -158,7 +137,7 @@ yourself, or pull, is taken as it is.
 With `memory.sync` on (the default when the repository has an `origin`), the server pushes the approved branch and
 the open review's branch after every change, and every ten minutes fetches the approved branch and takes in what
 the remote has — an edit made on GitHub, another machine. `wmem sync` does both now. If both sides changed the same
-lines it stops and says so in `wmem status`; merge by hand in `~/.wierd-mem/memory`.
+lines it stops and says so in `wmem status`; merge by hand in `~/.wierd-memory/memory`.
 
 ## Every day
 
@@ -211,12 +190,12 @@ pi -p --no-session --no-extensions -e <dream.childExtensions…> -e packages/pi/
 
 ## Settings
 
-`~/.wierd-mem/config.json` (or the Settings page, or `wmem config <key> <value>`):
+`~/.wierd-memory/config.json` (or the Settings page, or `wmem config <key> <value>`):
 
 | Key | Default | |
 |---|---|---|
 | `port` | `7433` | HTTP, on 127.0.0.1 (restart to apply) |
-| `memory.dir` | `~/.wierd-mem/memory` | the git repository (restart to apply) |
+| `memory.dir` | `~/.wierd-memory/memory` | the git repository (restart to apply) |
 | `memory.branch` | `main` | the branch that is approved memory (restart to apply) |
 | `memory.remote` / `memory.sync` | `origin` / `true` | push after every change, pull every ten minutes |
 | `language` | `Russian` | language of notes |

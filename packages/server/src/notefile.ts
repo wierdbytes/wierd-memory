@@ -1,7 +1,6 @@
 /**
  * A note as a file: `scopes/<scope>/notes/<slug>.md`, YAML front matter and a
- * Markdown body — the format pi-dream wrote, so its repositories and their
- * history carry over as they are.
+ * Markdown body.
  *
  * Reading is lenient: a note written by hand without an id, with plain YAML
  * instead of JSON values, or with unknown fields still loads (unknown fields
@@ -9,10 +8,10 @@
  * rewritten when the note in it really changed.
  */
 
-import { INDEX_MODES, isNoteId, makeNote, type Note, NOTE_STATUSES, NOTE_TYPES, type NoteStats, oneOf, parseEvidence, serializeNote, slugify, type SkillDraft } from "@wierd-memory/core";
+import { INDEX_MODES, isNoteId, makeNote, type Note, NOTE_STATUSES, NOTE_TYPES, oneOf, parseEvidence, serializeNote, slugify, type SkillDraft } from "@wierd-memory/core";
 import { parse as parseYaml } from "yaml";
 
-const KNOWN = new Set(["id", "title", "type", "status", "index", "when", "pinned", "enabled", "created", "updated", "confirmed", "valid_until", "superseded_by", "supersedes", "stats", "evidence"]);
+const KNOWN = new Set(["id", "title", "type", "status", "index", "when", "pinned", "enabled", "created", "updated", "confirmed", "valid_until", "superseded_by", "supersedes", "evidence"]);
 
 export function frontMatter(text: string): { fm: Record<string, unknown>; body: string } {
 	const m = /^---\r?\n([\s\S]*?)\r?\n---[ \t]*(?:\r?\n|$)/.exec(text);
@@ -35,8 +34,6 @@ function dateStr(v: unknown): string | undefined {
 export interface ParsedNote {
 	/** `id` is empty when the file has none (or an invalid one). */
 	note: Note;
-	/** Usefulness votes pi-dream kept in the file (wierd-memory keeps them in the state). */
-	stats?: NoteStats;
 	/** What the file lacks and a rewrite would add: an id, dates. */
 	incomplete: boolean;
 }
@@ -47,8 +44,6 @@ export function parseNote(content: string, scope: string, date: string): ParsedN
 	const firstLine = body.split("\n").find((l) => l.trim())?.replace(/^#+\s*/, "").trim() ?? "";
 	const extra: Record<string, unknown> = {};
 	for (const [k, v] of Object.entries(fm)) if (!KNOWN.has(k)) extra[k] = v;
-	const st = (fm.stats && typeof fm.stats === "object" ? fm.stats : {}) as Record<string, unknown>;
-	const stats = { helpful: typeof st.helpful === "number" ? st.helpful : 0, harmful: typeof st.harmful === "number" ? st.harmful : 0 };
 	const created = dateStr(fm.created);
 	const id = isNoteId(fm.id) ? fm.id : "";
 	const note = makeNote(
@@ -74,7 +69,7 @@ export function parseNote(content: string, scope: string, date: string): ParsedN
 		},
 		date,
 	);
-	return { note, stats: stats.helpful || stats.harmful ? stats : undefined, incomplete: !id || !created };
+	return { note, incomplete: !id || !created };
 }
 
 export function renderNote(n: Note): string {

@@ -24,8 +24,7 @@ export type EvidenceKind = (typeof EVIDENCE_KINDS)[number];
 export interface Evidence {
 	/**
 	 * Where it comes from: a pi session id, `inbox:<id>`, `review:<comment id>`
-	 * (a comment left in a review), `manual` (a hand edit) or `pr#<n>` (a GitHub
-	 * pull request comment, in notes imported from pi-dream).
+	 * (a comment left in a review) or `manual` (a hand edit).
 	 */
 	s: string;
 	/** Entry ids (or comment ids). */
@@ -62,7 +61,7 @@ export interface Note {
 	supersededBy?: string;
 	supersedes: string[];
 	evidence: Evidence[];
-	/** Unknown fields carried over from imports. */
+	/** Front matter fields not known here (a file edited by hand): kept as they are. */
 	extra: Record<string, unknown>;
 	/** Usefulness votes from session cards (bookkeeping, kept outside the versioned row). */
 	stats?: NoteStats;
@@ -111,7 +110,7 @@ export function uuidV7Time(id: string): number | undefined {
 
 /** Evidence that is not a pi session: inbox items, review comments, hand edits. */
 export function isSessionEvidence(e: Pick<Evidence, "s">): boolean {
-	return !/^(inbox:|review:|pr#|manual)/.test(e.s);
+	return !/^(inbox:|review:|manual)/.test(e.s);
 }
 
 /**
@@ -228,7 +227,7 @@ export const NOTE_COLUMNS = [
 ] as const;
 export type NoteColumn = (typeof NOTE_COLUMNS)[number];
 
-/** JSON with sorted keys: equal values give equal strings whatever order the database returns keys in. */
+/** JSON with sorted keys: equal values give equal strings whatever order the keys come in. */
 export function canonical(v: unknown): string {
 	if (v === undefined || v === null) return "null";
 	if (Array.isArray(v)) return `[${v.map(canonical).join(",")}]`;

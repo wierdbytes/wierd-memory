@@ -28,7 +28,6 @@ packages/server/src/
   dreams.ts             schedule, spawn and watch the headless pi that dreams; what a dream starts from
   searcher.ts           memory_search / memory_read / evidence
   http.ts               routes (keep docs/api.md and core/api.ts in step with it)
-  importer.ts           pi-dream's local state (`.local`) and settings → wierd-memory's
   cli.ts serve.ts       `wmem`
 packages/web/           React UI, bundled by Bun's HTML import (no other build tooling); `import type` from core only
 packages/pi/            the pi extension (index.ts) and the dream (runner.ts → pipeline.ts, llm.ts)
@@ -49,7 +48,8 @@ scripts/seed-review.ts  a made-up dream for a sandbox server
   for another (`--follow` is not used; see `MemoryStore.noteHistory`).
 - A note keeps its file for life (named after its first title), and has the same path on the approved and the
   review branch wherever its scope allows (`upsert(…, { like })`).
-- Files are only rewritten when the note in them changed, so pi-dream's files stay byte-identical until edited.
+- Files are only rewritten when the note in them changed, so a file written by hand or by an older version stays
+  byte-identical until its note is edited.
 - All mutations go through `App.lock`. Do not call `lock` from inside a locked function (it would wait for itself).
 - The server is the only writer of `.local/`; the pi extension, the mod and the CLI use the HTTP API.
 - A pi session must never hang on memory: the extension's calls have timeouts and failures are values.

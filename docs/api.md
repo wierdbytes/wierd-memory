@@ -117,4 +117,3 @@ The dream runner's side (`packages/pi/runner.ts`):
 | `GET /api/prompts` | `{ prompts: [{ name, default, override }], charters: { global, project, projectOverride } }`. |
 | `PUT /api/prompts/:name` | `{ body: string \| null }` — override a dream prompt (`cards`, `curator`, `review`, `verify`) or the default purpose of project memory (`project_charter`); null restores the built-in text. |
 | `POST /api/sync` | `{ message }`. Exchange with the git remote now: fetch the approved branch and take in what it has, push it and the open review's branch, drop the remote branches of reviews that are over. 409 when both sides changed the same lines. |
-| `POST /api/import` | `{ from? }` — take over pi-dream's local state (`<repo>/.local`: sessions read, inbox, rejected titles, digests, cards) and its settings. Only adds. |

@@ -125,7 +125,7 @@ export function parseRunArgs(args: string): RunArgs {
 
 // ── digests ──────────────────────────────────────────────────────────────
 
-/** Bump when the digest format or its record changes: every digest is rebuilt. (3: the same as pi-dream's, so its digests carry over.) */
+/** Bump when the digest format or its record changes: every digest is rebuilt. */
 export const DIGEST_VERSION = 3;
 
 export interface DigestRecord {
@@ -365,7 +365,7 @@ async function resolveRefs(refs: EvidenceRef[], deps: EvidenceDeps): Promise<{ e
 			evidence.push({ s: ref.s, e: [], date: item.ts.slice(0, 10), at: isoMinute(item.ts), kind: item.source === "user" ? "user" : "inbox" });
 			continue;
 		}
-		if (ref.s.startsWith("review:") || ref.s.startsWith("pr#")) {
+		if (ref.s.startsWith("review:")) {
 			const comment = ref.e.map((id) => deps.comments.get(id)).find(Boolean);
 			if (!comment) return fail(`unknown review comment ${ref.e.join(",")}`);
 			parts.push(`--- review comment ${comment.id} by ${comment.author} (${comment.at}) ---`, comment.body);
@@ -431,7 +431,6 @@ async function newerNoteEvidence(note: Note, opEvidence: Evidence[], deps: Evide
 	if (since === undefined) return undefined;
 	const newer: Array<{ e: Evidence; t: number; excerpts: string }> = [];
 	for (const old of note.evidence) {
-		if (old.s.startsWith("pr#")) continue;
 		if (old.s === "manual" || old.s.startsWith("review:")) {
 			const t = evidenceTime(old, startOf);
 			if (t !== undefined && t > since) newer.push({ e: old, t, excerpts: `--- ${old.s === "manual" ? "the user edited this note by hand" : "the user edited or approved this note in a review"} at ${old.at ?? old.date ?? "?"} ---` });

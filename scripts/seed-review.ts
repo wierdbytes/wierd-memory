@@ -28,7 +28,7 @@ const wsData = await api<DreamWorkspace>("GET", `/api/dream/workspace?run=${run.
 const ws = new Workspace(wsData.notes, today(), { pending: wsData.pending, scopes: wsData.scopes });
 const active = wsData.notes.filter((n) => n.status === "active" && n.enabled && !wsData.pending.includes(n.id));
 const withSession = active.filter((n) => n.evidence.some((e) => isSessionEvidence(e) && e.e.length));
-if (withSession.length < 6) throw new Error("the server needs some notes with session evidence first (wmem import)");
+if (withSession.length < 6) throw new Error("the server needs some notes with session evidence first (let it dream once, or give it a copy of a memory repository)");
 const projects = [...new Set(active.map((n) => n.scope).filter((s) => s !== "global"))];
 const pick = (i: number) => withSession[(i * 7) % withSession.length];
 const evOf = (i: number): Evidence[] => pick(i).evidence.filter((e) => isSessionEvidence(e)).slice(0, 2);
