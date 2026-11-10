@@ -33,7 +33,7 @@ note, and GitHub is where the repository is backed up and can be looked at.
 Needs [Bun](https://bun.sh), git and pi.
 
 ```sh
-cd ~/me/dev/wierd-memory && bun install
+git clone https://github.com/wierdbytes/wierd-memory && cd wierd-memory && bun install
 ln -s "$PWD/bin/wmem" ~/.local/bin/wmem
 
 wmem init --repo git@github.com:you/pi-memory.git
@@ -51,7 +51,7 @@ wmem herdr install                            # the Herdr panel (see packages/he
 ```
 
 To work on the extension itself, install it from the checkout instead (an absolute path; pi loads `index.ts` from
-source): `pi install ~/me/dev/wierd-memory/packages/pi`.
+source): `pi install /path/to/wierd-memory/packages/pi`.
 
 ## How memory is kept
 
