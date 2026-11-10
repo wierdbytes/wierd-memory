@@ -12,7 +12,7 @@ import { Runtime } from "./runtime.ts";
 import { registerTools } from "./tools.ts";
 
 export default function piWierdMemory(pi: ExtensionAPI) {
-	if (process.env.WMEM_CHILD === "1" || process.env.PI_DREAM_CHILD === "1") return;
+	if (process.env.WMEM_CHILD === "1") return;
 
 	pi.registerFlag("no-memory", {
 		description: "wierd-memory: no memory injection and no memory tools in this run",

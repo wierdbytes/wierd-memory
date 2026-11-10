@@ -159,7 +159,7 @@ export class Dreams {
 					cwd: paths.home,
 					detached: true,
 					stdio: ["ignore", fd, fd],
-					env: { ...process.env, WMEM_CHILD: "1", PI_DREAM_CHILD: "1", WMEM_URL: this.app.url, WMEM_HOME: paths.home },
+					env: { ...process.env, WMEM_CHILD: "1", WMEM_URL: this.app.url, WMEM_HOME: paths.home },
 				});
 				child.on("error", (err) => {
 					void state.updateRun(id, { status: "error", finishedAt: new Date().toISOString(), error: `could not start ${cfg.dream.piCommand}: ${err.message}` }).then(() => this.app.bump("dream"));

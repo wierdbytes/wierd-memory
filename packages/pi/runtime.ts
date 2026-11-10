@@ -32,7 +32,7 @@ interface InjectRecord extends Snapshot {
 }
 
 export function disabledByEnv(): boolean {
-	return process.env.WMEM_DISABLE === "1" || process.env.WMEM_CHILD === "1" || process.env.PI_DREAM_CHILD === "1";
+	return process.env.WMEM_DISABLE === "1" || process.env.WMEM_CHILD === "1";
 }
 
 const why = (err: unknown) => (err instanceof Error ? err.message : String(err));

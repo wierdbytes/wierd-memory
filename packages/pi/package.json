@@ -1,6 +1,6 @@
 {
   "name": "@wierdbytes/pi-memory",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "pi extension for wierd-memory: injects the approved memory index into sessions, adds memory_search / memory_read / memory_inbox tools and runs dreams for the wierd-memory server.",
   "type": "module",
   "private": true,

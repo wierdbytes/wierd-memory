@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.1.1] - 2026-11-10
+
+### Removed
+
+- `PI_DREAM_CHILD` no longer disables the extension (pi-dream is retired); use `WMEM_DISABLE=1`.
+
 ## [0.1.0] - 2026-11-10
 
 ### Added
