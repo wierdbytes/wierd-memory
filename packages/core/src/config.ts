@@ -2,7 +2,7 @@
  * Settings of wierd-mem (`~/.wierd-mem/config.json`).
  *
  * Missing, unknown or malformed fields fall back to defaults, so a hand-edited
- * file can never break the server. `WMEM_PORT` / `WMEM_DOLT_PORT` override the ports.
+ * file can never break the server. `WMEM_PORT` overrides the port.
  */
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -24,8 +24,17 @@ export interface StageModel {
 export interface WmemConfig {
 	/** HTTP port of the server (API and web UI), on 127.0.0.1. */
 	port: number;
-	/** Port of the Dolt SQL server wierd-mem runs, on 127.0.0.1. */
-	doltPort: number;
+	/** The git repository memory is kept in. */
+	memory: {
+		/** Its folder; empty: `memory` under the wierd-mem home (`~/.wierd-mem/memory`). */
+		dir: string;
+		/** The branch that is approved memory: what sessions get. */
+		branch: string;
+		/** The remote to push to and pull from (`origin`); empty: none. */
+		remote: string;
+		/** Push approved memory and review branches after every change, pull on a schedule. */
+		sync: boolean;
+	};
 	/** Language dreams write notes in. */
 	language: string;
 	/** Inject the approved memory index into sessions. */
@@ -65,19 +74,12 @@ export interface WmemConfig {
 	};
 	/** Let dreams propose AGENTS.md / CLAUDE.md edits (reviewed like notes, applied to the working copy). */
 	agentsMd: boolean;
-	/** A Dolt remote to push approved memory to (a backup, or sync between machines). */
-	remote: {
-		/** e.g. `file:///Volumes/backup/wmem`, `https://doltremoteapi.dolthub.com/<org>/<repo>`; empty: none. */
-		url: string;
-		/** Push `main` after every change to approved memory. */
-		autoPush: boolean;
-	};
 }
 
 export function defaults(): WmemConfig {
 	return {
 		port: 7433,
-		doltPort: 7434,
+		memory: { dir: "", branch: "main", remote: "origin", sync: true },
 		language: "Russian",
 		inject: true,
 		models: {
@@ -97,7 +99,6 @@ export function defaults(): WmemConfig {
 		},
 		budgets: { globalTokens: 1000, projectTokens: 1500 },
 		agentsMd: true,
-		remote: { url: "", autoPush: false },
 	};
 }
 
@@ -120,7 +121,16 @@ export function sanitize(raw: unknown): WmemConfig {
 	if (!isObj(raw)) return d;
 	const cfg = d;
 	cfg.port = Math.round(num(raw.port, 1, 65535, d.port));
-	cfg.doltPort = Math.round(num(raw.doltPort, 1, 65535, d.doltPort));
+	if (isObj(raw.memory)) {
+		const m = raw.memory;
+		const branch = typeof m.branch === "string" && /^[A-Za-z0-9._/-]{1,100}$/.test(m.branch.trim()) && !m.branch.includes("..") ? m.branch.trim() : d.memory.branch;
+		cfg.memory = {
+			dir: typeof m.dir === "string" ? m.dir.trim() : d.memory.dir,
+			branch,
+			remote: typeof m.remote === "string" && /^[A-Za-z0-9._-]*$/.test(m.remote.trim()) ? m.remote.trim() : d.memory.remote,
+			sync: bool(m.sync, d.memory.sync),
+		};
+	}
 	cfg.language = str(raw.language, d.language);
 	cfg.inject = bool(raw.inject, d.inject);
 	if (isObj(raw.models)) for (const stage of STAGES) cfg.models[stage] = stageModel(raw.models[stage], d.models[stage]);
@@ -151,7 +161,6 @@ export function sanitize(raw: unknown): WmemConfig {
 		};
 	}
 	cfg.agentsMd = bool(raw.agentsMd, d.agentsMd);
-	if (isObj(raw.remote)) cfg.remote = { url: typeof raw.remote.url === "string" ? raw.remote.url.trim() : "", autoPush: bool(raw.remote.autoPush, false) };
 	return cfg;
 }
 
@@ -164,8 +173,6 @@ export function loadConfig(path: string = homePaths().config): WmemConfig {
 	}
 	const port = Number(process.env.WMEM_PORT);
 	if (Number.isInteger(port) && port > 0) cfg.port = port;
-	const doltPort = Number(process.env.WMEM_DOLT_PORT);
-	if (Number.isInteger(doltPort) && doltPort > 0) cfg.doltPort = doltPort;
 	return cfg;
 }
 

@@ -251,6 +251,17 @@ function OpenReview({ view, scopes, actions, settle }: OpenProps) {
 					{agentsOpen.length ? <Chip tone="blue">{agentsOpen.length} AGENTS.md</Chip> : null}
 				</div>
 				<RunLines runs={view.runInfos} />
+				<div className="run-lines">
+					<span className="run-line" title="The git branch that holds approved memory plus what is proposed here">
+						<span>branch</span>
+						<span className="mono">{view.branch}</span>
+					</span>
+					{view.compareUrl ? (
+						<a className="run-line" href={view.compareUrl} target="_blank" rel="noreferrer">
+							the same difference on GitHub ↗
+						</a>
+					) : null}
+				</div>
 				{view.warnings.length ? (
 					<Callout tone="yellow" title={`${plural(view.warnings.length, "warning")} — look at these before accepting in bulk`}>
 						<ul className="plain-list">

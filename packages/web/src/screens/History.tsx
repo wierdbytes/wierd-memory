@@ -23,7 +23,7 @@ export function HistoryScreen() {
 		<div className="page">
 			<header className="page-head">
 				<h1>History</h1>
-				<p className="dim">Every change to approved memory is a commit in the Dolt database: accepted reviews, hand edits, imports. Open one to see the notes it changed; a note’s own page can restore any of its versions.</p>
+				<p className="dim">Every change to approved memory is a commit in its git repository: accepted reviews, hand edits (here or in an editor), what was pulled from the remote. Open one to see the notes it changed; a note’s own page can restore any of its versions.</p>
 			</header>
 			{!list ? (
 				<LoadState error={history.error} loading={history.loading} reload={history.reload} />

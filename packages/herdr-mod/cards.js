@@ -65,6 +65,7 @@ export function noteCard(m, t, { note: n, scope }) {
       ? button(t, "a-unpin", { icon: "pin", label: "Unpin", tip: "No longer first in the index; dreams may close it", off: busy, onClick: (_e, cx) => m.patchNote(n, { pinned: false }, cx) })
       : button(t, "a-pin", { icon: "pin", label: "Pin", tip: "First in the index, and a dream never closes it", off: busy, onClick: (_e, cx) => m.patchNote(n, { pinned: true }, cx) }),
     div().flex_1(),
+    ...(n.file ? [iconButton(t, "a-file", "open", `Open the note's file in $EDITOR beside the focused pane: save it and the server commits the edit\n${m.tilde(n.file)}`, (_e, cx) => m.openFile(n.file, cx))] : []),
     iconButton(t, "a-copy", m.copied === n.id ? "check" : "copy", m.copied === n.id ? "Copied" : `Copy ${n.id}: pi opens it with memory_read`, (_e, cx) => m.copy(n.id, cx)),
     iconButton(t, "a-web", "external", "Open in the browser (history, restore, move)", (_e, cx) => cx.open_url(`${m.server}/#/note/${n.id}`)),
   ];

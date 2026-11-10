@@ -670,7 +670,7 @@ export async function dream(runId: string, deps: DreamDeps): Promise<DreamOutcom
 	const { api, llm, log, signal } = deps;
 	const w = await api.workspace(runId);
 	const cfg = w.config;
-	const P = homePaths(w.home);
+	const P = homePaths(w.home, cfg.memory.dir);
 	const kind = w.kind;
 	const date = today();
 	const runDir = join(P.runs, runId);
@@ -1050,8 +1050,8 @@ export async function dream(runId: string, deps: DreamDeps): Promise<DreamOutcom
 }
 
 /** Append to the run's own log file as well as to stdout (which the server keeps). */
-export function runLogger(home: string, runId: string): (m: string) => void {
-	const dir = join(homePaths(home).runs, runId);
+export function runLogger(runsDir: string, runId: string): (m: string) => void {
+	const dir = join(runsDir, runId);
 	mkdirSync(dir, { recursive: true });
 	const file = join(dir, "log.txt");
 	return (m: string) => {

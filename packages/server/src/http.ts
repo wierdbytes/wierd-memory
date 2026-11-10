@@ -10,8 +10,8 @@
 import type { DreamSubmit, EvidenceRef, InboxInput, NoteCreate, NoteEdit, NotePatch, RunInfo } from "@wierd-mem/core";
 import { GLOBAL_SCOPE, INBOX_KINDS, oneOf, projectScope, renderReport, resolveProject, defaultPrompt, PROMPT_NAMES, DEFAULT_GLOBAL_CHARTER, DEFAULT_PROJECT_CHARTER } from "@wierd-mem/core";
 import { type App, bad, HttpError, notFound, scopeShortName } from "./app.ts";
-import { MAIN } from "./dolt.ts";
-import { importPiDream } from "./importer.ts";
+import { MAIN } from "./git.ts";
+import { importPiDreamState } from "./importer.ts";
 
 type Handler = (ctx: Ctx) => Promise<unknown> | unknown;
 
@@ -335,11 +335,11 @@ route("DELETE", "/api/skills", async ({ app, q, actor }) => {
 	return { ok: true };
 });
 
-route("POST", "/api/push", async ({ app }) => ({ message: await app.push() }));
+route("POST", "/api/sync", async ({ app }) => ({ message: await app.sync() }));
 
-route("POST", "/api/import", async ({ app, body, actor }) => {
-	const b = await body<{ from?: string; overwrite?: boolean; prune?: boolean }>();
-	return importPiDream(app, { from: b.from, overwrite: b.overwrite === true, prune: b.prune === true, actor });
+route("POST", "/api/import", async ({ app, body }) => {
+	const b = await body<{ from?: string }>();
+	return importPiDreamState(app, { from: b.from });
 });
 
 // ── dispatch ─────────────────────────────────────────────────────────────

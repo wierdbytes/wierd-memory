@@ -11,7 +11,7 @@ import { AutoTextarea, Button, Callout, Chip, confirmDialog, CopyButton, Field, 
 import { ago, sameJson, STAGES, THINKING_LEVELS } from "../util.ts";
 
 type Section = keyof WmemConfig;
-const SECTIONS: readonly Section[] = ["language", "inject", "agentsMd", "budgets", "models", "schedule", "dream", "remote"];
+const SECTIONS: readonly Section[] = ["language", "inject", "agentsMd", "budgets", "models", "schedule", "dream", "memory"];
 const STAGE_LABEL: Record<Stage, { name: string; hint: string }> = {
 	cards: { name: "Session cards", hint: "summarizes each session — many calls, a fast model" },
 	analyze: { name: "Curator", hint: "decides what changes in memory — one long call, the strongest model" },
@@ -60,8 +60,7 @@ export function SettingsScreen() {
 			setDraft(saved);
 			config.set(saved);
 		}, "Settings saved");
-	const push = () => run("push", () => api.push(), (r) => r.message || "Pushed");
-	const remoteSaved = base.remote.url.trim().length > 0 && sameJson(base.remote, draft.remote);
+	const sync = () => run("sync", () => api.sync(), (r) => r.message || "In step with the remote");
 
 	return (
 		<div className="page settings">
@@ -134,20 +133,25 @@ export function SettingsScreen() {
 				</Field>
 			</Group>
 
-			<Group title="Remote (backup / sync)">
-				<Field label="Dolt remote URL" hint="e.g. file:///Volumes/backup/wmem or https://doltremoteapi.dolthub.com/<org>/<repo>; empty: none" wide>
-					<input type="text" className="mono" value={draft.remote.url} onChange={(ev) => set("remote", { ...draft.remote, url: ev.target.value })} placeholder="none" />
+			<Group title="Git repository">
+				<p className="dim">
+					Memory is a git repository: notes are Markdown files, every change is a commit. The folder and the approved branch are set in config.json (<code>memory.dir</code>, <code>memory.branch</code>) and apply after a restart.
+				</p>
+				<Field label="Remote" hint="the name of the git remote to exchange with (origin); empty: none">
+					<input type="text" className="mono" value={draft.memory.remote} onChange={(ev) => set("memory", { ...draft.memory, remote: ev.target.value.trim() })} placeholder="none" />
 				</Field>
-				<Check label="Push after every change to approved memory" checked={draft.remote.autoPush} onChange={(v) => set("remote", { ...draft.remote, autoPush: v })} />
+				<Check label="Push after every change and pull every few minutes" checked={draft.memory.sync} onChange={(v) => set("memory", { ...draft.memory, sync: v })} />
 				<div className="row-actions">
-					<Button busy={busy === "push"} disabled={!remoteSaved || !!busy} onClick={() => void push()}>
-						Push now
+					<Button busy={busy === "sync"} disabled={!status?.remote.url || !!busy} onClick={() => void sync()}>
+						Sync now
 					</Button>
-					{!base.remote.url ? <span className="dim">Set a remote URL and save first.</span> : !remoteSaved ? <span className="dim">Save the remote settings first.</span> : null}
-					{status?.remote.lastPush ? <span className="dim">last push {ago(status.remote.lastPush)}</span> : null}
+					{status && !status.remote.url ? <span className="dim">The repository has no remote “{status.remote.name || "origin"}”.</span> : null}
+					{status?.remote.url ? <span className="mono dim">{status.remote.url}</span> : null}
+					{status?.remote.lastPush ? <span className="dim">pushed {ago(status.remote.lastPush)}</span> : null}
+					{status?.remote.lastFetch ? <span className="dim">fetched {ago(status.remote.lastFetch)}</span> : null}
 				</div>
 				{status?.remote.error ? (
-					<Callout tone="red" title="The last push failed">
+					<Callout tone="red" title="The last exchange with the remote failed">
 						{status.remote.error}
 					</Callout>
 				) : null}
@@ -177,15 +181,15 @@ export function SettingsScreen() {
 						<dd className="mono">{status.home}</dd>
 						<dt>URL</dt>
 						<dd>
-							<span className="mono">{status.url}</span> <span className="dim">— the ports are set in config.json (or WMEM_PORT / WMEM_DOLT_PORT) and apply after a restart</span>
+							<span className="mono">{status.url}</span> <span className="dim">— the port is set in config.json (or WMEM_PORT) and applies after a restart</span>
 						</dd>
-						<dt>Dolt</dt>
+						<dt>Repository</dt>
 						<dd>
-							<span className="mono">{status.dolt.version}</span> on port <span className="mono">{status.dolt.port}</span>, database <span className="mono">{status.dolt.database}</span>
+							<CopyButton text={status.git.dir} label={<code>{status.git.dir}</code>} /> <span className="dim">branch</span> <span className="mono">{status.git.branch}</span>
 						</dd>
-						<dt>SQL access</dt>
+						<dt>Look inside</dt>
 						<dd>
-							<CopyButton text={`mysql -h127.0.0.1 -P${status.dolt.port} -uroot ${status.dolt.database}`} label={<code>{`mysql -h127.0.0.1 -P${status.dolt.port} -uroot ${status.dolt.database}`}</code>} />
+							<CopyButton text={`git -C ${status.git.dir} log --oneline -20`} label={<code>{`git -C ${status.git.dir} log --oneline -20`}</code>} />
 						</dd>
 						<dt>Memory version</dt>
 						<dd className="mono">{status.memver}</dd>

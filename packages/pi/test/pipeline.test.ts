@@ -1,5 +1,5 @@
 /**
- * A whole dream against a real server and Dolt, with scripted models: sessions
+ * A whole dream against a real server and its git repository, with scripted models: sessions
  * on disk → digests → cards → curator → fact check → the review.
  */
 
@@ -118,7 +118,7 @@ beforeAll(async () => {
 		["bbbb0001", "user", "Никогда не трогай vendor/"],
 		["bbbb0002", "assistant", "Понял."],
 	]);
-	writeFileSync(join(home, "config.json"), JSON.stringify({ port: 17633, doltPort: 17634 }));
+	writeFileSync(join(home, "config.json"), JSON.stringify({ port: 17633 }));
 	app = await App.start({ home, noSchedule: true, log: () => {} });
 }, 60_000);
 
@@ -159,9 +159,9 @@ describe("a dream", () => {
 		// bookkeeping
 		expect(Object.values(await app.state.marks()).map((m) => m.ok)).toEqual([true, true]);
 		expect(await app.state.inbox("pending")).toEqual([]);
-		expect(existsSync(join(home, "cards", `${S1}.json`))).toBe(true);
-		expect(existsSync(join(home, "digests", "index.json"))).toBe(true);
-		expect(readFileSync(join(home, "runs", id, "report.md"), "utf-8")).toContain("# dream ");
+		expect(existsSync(join(home, "memory", ".local", "cards", `${S1}.json`))).toBe(true);
+		expect(existsSync(join(home, "memory", ".local", "digests", "index.json"))).toBe(true);
+		expect(readFileSync(join(home, "memory", ".local", "runs", id, "report.md"), "utf-8")).toContain("# dream ");
 		const stored = await app.state.run(id);
 		expect([stored?.status, stored?.sessions, stored?.reviewId]).toEqual(["ok", 2, reviewId]);
 		expect(stored?.report?.usage.cards?.calls).toBe(2);

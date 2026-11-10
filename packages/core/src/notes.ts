@@ -1,11 +1,12 @@
 /**
  * Memory notes — the unit of memory.
  *
- * A note is one row of the `notes` table in the Dolt database (`wmem`): a
- * one-line statement (the title — it is also the line agents see in their
- * context), the specifics (body), how it reaches agents (index) and the
- * evidence behind it. `main` holds approved memory; a dream writes its
- * proposals to a review branch.
+ * A note is one Markdown file in the memory repository
+ * (`scopes/<scope>/notes/<slug>.md`: front matter + body): a one-line
+ * statement (the title — it is also the line agents see in their context), the
+ * specifics (body), how it reaches agents (index) and the evidence behind it.
+ * The approved branch holds approved memory; a dream writes its proposals to a
+ * review branch.
  */
 
 import { randomBytes } from "node:crypto";
@@ -269,7 +270,7 @@ const TRANSLIT: Record<string, string> = {
 	ы: "y", ь: "", э: "e", ю: "yu", я: "ya",
 };
 
-/** File-name-safe slug of a title (used when notes are exported as files). */
+/** File-name-safe slug of a title: the name of a new note's file. */
 export function slugify(title: string, max = 60): string {
 	const t = [...title.toLowerCase()].map((c) => TRANSLIT[c] ?? c).join("");
 	let s = t
@@ -286,7 +287,7 @@ export function slugify(title: string, max = 60): string {
 
 const j = (v: unknown) => JSON.stringify(v);
 
-/** A note as a Markdown file with front matter (the format pi-dream kept in git) — for export. */
+/** A note as its file: front matter (values are JSON, a subset of YAML) and the body. Votes are not part of the file. */
 export function serializeNote(n: Note): string {
 	const lines = ["---", `id: ${n.id}`, `title: ${j(n.title)}`, `type: ${n.type}`, `status: ${n.status}`, `index: ${n.index}`];
 	if (n.when) lines.push(`when: ${j(n.when)}`);
@@ -297,7 +298,6 @@ export function serializeNote(n: Note): string {
 	if (n.validUntil) lines.push(`valid_until: ${j(n.validUntil)}`);
 	if (n.supersededBy) lines.push(`superseded_by: ${j(n.supersededBy)}`);
 	if (n.supersedes.length) lines.push(`supersedes: ${j(n.supersedes)}`);
-	if (n.stats && (n.stats.helpful || n.stats.harmful)) lines.push(`stats: ${j({ helpful: n.stats.helpful, harmful: n.stats.harmful })}`);
 	if (n.evidence.length) {
 		lines.push("evidence:");
 		for (const ev of n.evidence) {

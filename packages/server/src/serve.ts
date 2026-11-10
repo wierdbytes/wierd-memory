@@ -1,6 +1,6 @@
 /**
- * `wmem serve`: the server process — Dolt underneath, the HTTP API and the
- * web UI on 127.0.0.1.
+ * `wmem serve`: the server process — the memory repository underneath, the
+ * HTTP API and the web UI on 127.0.0.1.
  */
 
 import { rmSync, writeFileSync } from "node:fs";
@@ -40,7 +40,7 @@ export async function serve(): Promise<void> {
 		fetch: () => new Response("not found", { status: 404 }),
 	});
 	writeFileSync(app.paths.serverInfo, `${JSON.stringify({ pid: process.pid, port: server.port, url: app.url, version: VERSION, startedAt: new Date().toISOString() }, null, 2)}\n`);
-	app.log(`wierd-mem ${VERSION}: ${app.url} — memory in ${app.paths.dolt} (dolt ${app.doltVersion} on :${app.cfg.doltPort})`);
+	app.log(`wierd-mem ${VERSION}: ${app.url} — memory in ${app.paths.memory} (branch ${app.repo.branch}${app.remote.url ? `, remote ${app.remote.url}` : ", no remote"})`);
 	let stopping = false;
 	const stop = async (signal: string) => {
 		if (stopping) return;

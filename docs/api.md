@@ -14,24 +14,24 @@ Everything is JSON under `/api`. Types are in [`packages/core/src/api.ts`](../pa
 
 | | |
 |---|---|
-| `GET /api/status` | `StatusInfo`: counts, the open review in short, the dream state, `rev`. Cheap; poll it. |
+| `GET /api/status` | `StatusInfo`: counts, the open review in short, the dream state, `git` (folder, approved branch, commit), `remote` (url, last push / fetch, error), `rev`. Cheap; poll it. |
 | `GET /api/wait?rev=<n>&timeout=<s>` | Long poll: answers `{ rev }` as soon as the server's `rev` differs from `n`, or after `timeout` seconds (default 25, max 55). `rev` grows on every change (memory, review, inbox, dreams, config). |
 | `GET /api/events` | The same as server-sent events: `data: {"rev": 12, "kind": "memory" \| "review" \| "inbox" \| "dream" \| "config" \| "hello"}`. |
 
-## Memory (approved: branch `main`)
+## Memory (approved: the branch `memory.branch` of the repository)
 
 | | |
 |---|---|
 | `GET /api/scopes` | `ScopeInfo[]` — Global first, then projects by name. `index` says what the scope's index holds now (`ids`, `tokens` of `budget`, `over` = notes that did not fit). |
 | `PUT /api/scopes/:id/charter` | `{ charter: string \| null }` — what this scope's memory is for (steers dreams). `:id` is URL-encoded (`projects%2F…`). |
 | `GET /api/notes?scope=<id>&status=<s>&ref=review` | `{ notes: NoteView[] }` in index order per scope. `ref=review`: approved memory as it would be if the open review were accepted whole. |
-| `GET /api/notes/:id` | `NoteView` (`reach`: how it reaches agents now; `stats`: usefulness votes). |
+| `GET /api/notes/:id` | `NoteView` (`reach`: how it reaches agents now; `stats`: usefulness votes; `file`: the note's file in the repository). |
 | `POST /api/notes` | `NoteCreate` → `NoteView`. A hand-written note; one commit. |
 | `PATCH /api/notes/:id` | `NotePatch` → `NoteView`. Any of: `title`, `body`, `when` (null clears), `index`, `type`, `scope` (move), `enabled` (false = turned off: agents no longer get it, dreams leave it alone), `pinned`, `status` (`deprecated` closes, `active` reopens). One commit; applied at once (a person's own edit needs no review). |
-| `DELETE /api/notes/:id` | Deletes the row (history keeps it). |
-| `GET /api/notes/:id/history` | `NoteHistoryEntry[]`, newest first: each commit on `main` that changed the note, with `changes: { column: [before, after] }`. |
+| `DELETE /api/notes/:id` | Deletes the file (history keeps it: the note's history still answers, and `restore` puts it back). |
+| `GET /api/notes/:id/history` | `NoteHistoryEntry[]`, newest first: each commit on the approved branch that changed the note (followed by its id across moves), with `changes: { column: [before, after] }`. |
 | `POST /api/notes/:id/restore` | `{ commit }` → `NoteView`: the note as it was after that commit. |
-| `GET /api/history?limit=` | `CommitInfo[]`: commits on `main`, newest first. |
+| `GET /api/history?limit=` | `CommitInfo[]`: commits on the approved branch, newest first. |
 | `GET /api/history/:hash` | `{ changes: [{ type, before?: Note, after?: Note }] }`: notes that commit changed. |
 | `GET /api/skills` · `DELETE /api/skills?scope=&name=` | Approved skills (`{scope, name, description, body}`). |
 
@@ -57,15 +57,16 @@ Everything is JSON under `/api`. Types are in [`packages/core/src/api.ts`](../pa
 
 ## Review
 
-One review is open at a time: a Dolt branch that holds approved memory plus what dreams propose.
-Its items are the difference between `main` and that branch.
+One review is open at a time: a git branch `review/<id>` that holds approved memory plus what dreams propose.
+Its items are the difference between the approved branch and that branch, note by note. `ReviewView.branch` names
+it; `compareUrl` is the same difference on GitHub when the remote is there.
 
 | | |
 |---|---|
 | `GET /api/review` | The open review as `ReviewView`, or `null`. |
 | `GET /api/reviews` | `ReviewSummary[]`, newest first. |
 | `GET /api/reviews/:id` | `ReviewView` (`:id` may be `open`). A closed review has no `items`, only `decisions`. |
-| `POST /api/reviews/:id/accept` | `{ keys?: string[], edit?: NoteEdit }` → `ReviewView`. Accepts the items (`keys` omitted: everything left). With `edit` (exactly one key): the proposed text is changed first, then accepted — "edit and accept". One commit on `main`. |
+| `POST /api/reviews/:id/accept` | `{ keys?: string[], edit?: NoteEdit }` → `ReviewView`. Accepts the items (`keys` omitted: everything left). With `edit` (exactly one key): the proposed text is changed first, then accepted — "edit and accept". One commit on the approved branch. |
 | `POST /api/reviews/:id/reject` | `{ keys?: string[], reason?: string }` → `ReviewView`. The items leave the review; rejected new notes are not proposed again without new evidence. |
 | `POST /api/reviews/:id/close` | Rejects whatever is left and closes. |
 | `POST /api/reviews/:id/comments` | `{ body, noteId? }` → `ReviewView`. An instruction for the dream ("split this", "move to project X"); `POST /api/dreams {mode:"review"}` applies comments now, otherwise the next dream does. |
@@ -112,8 +113,8 @@ The dream runner's side (`packages/pi/runner.ts`):
 
 | | |
 |---|---|
-| `GET /api/config` · `PUT /api/config` | `WmemConfig` (a partial object is merged at the top level: send whole sections, e.g. `{ "schedule": { … } }`). Ports apply after a restart. |
+| `GET /api/config` · `PUT /api/config` | `WmemConfig` (a partial object is merged at the top level: send whole sections, e.g. `{ "schedule": { … } }`). `port`, `memory.dir` and `memory.branch` apply after a restart. |
 | `GET /api/prompts` | `{ prompts: [{ name, default, override }], charters: { global, project, projectOverride } }`. |
 | `PUT /api/prompts/:name` | `{ body: string \| null }` — override a dream prompt (`cards`, `curator`, `review`, `verify`) or the default purpose of project memory (`project_charter`); null restores the built-in text. |
-| `POST /api/push` | Pushes `main` to the Dolt remote from `remote.url`. |
-| `POST /api/import` | `{ from?, overwrite?, prune? }` — take over a pi-dream memory repository. |
+| `POST /api/sync` | `{ message }`. Exchange with the git remote now: fetch the approved branch and take in what it has, push it and the open review's branch, drop the remote branches of reviews that are over. 409 when both sides changed the same lines. |
+| `POST /api/import` | `{ from? }` — take over pi-dream's local state (`<repo>/.local`: sessions read, inbox, rejected titles, digests, cards) and its settings. Only adds. |

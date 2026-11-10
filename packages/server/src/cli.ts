@@ -4,10 +4,11 @@
  *
  * `wmem serve` is the server. Every other command is a client of its HTTP API
  * (`WMEM_URL`, default http://127.0.0.1:7433): `--json` prints the raw answer.
+ * `wmem init` and `wmem service` work on this machine without the server.
  */
 
 import { spawn, spawnSync } from "node:child_process";
-import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -25,10 +26,10 @@ import {
 	type CommitInfo,
 	homePaths,
 	loadConfig,
-	serializeNote,
+	saveConfig,
 	serverUrl,
-	slugify,
 } from "@wierd-mem/core";
+import { git } from "./git.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO = resolve(HERE, "..", "..", "..");
@@ -41,7 +42,7 @@ interface Args {
 	flags: Record<string, string | boolean>;
 }
 
-const BOOL = new Set(["json", "all", "global", "overwrite", "prune", "notes", "sessions", "help", "force", "off", "archived", "pinned", "follow", "state", "short", "history"]);
+const BOOL = new Set(["json", "all", "global", "notes", "sessions", "help", "force", "off", "archived", "pinned", "follow", "short", "history"]);
 
 function parseArgs(argv: string[]): Args {
 	const out: Args = { _: [], flags: {} };
@@ -134,6 +135,7 @@ function printNote(n: NoteView): void {
 	out(`${bold(n.title)}`);
 	out(dim(`${n.id} · ${n.scopeName} · ${n.type} · ${n.reach}${n.pinned ? " · pinned" : ""}${n.status !== "active" ? ` · ${n.status}` : ""} · updated ${n.updated}`));
 	if (n.when) out(`${dim("when:")} ${n.when}`);
+	if (n.file) out(dim(n.file));
 	out();
 	out(n.body || dim("(no details)"));
 	if (n.evidence.length) {
@@ -160,6 +162,7 @@ function printItem(it: ReviewItem, full: boolean): void {
 function printReview(v: ReviewView | null, full: boolean): void {
 	if (!v) return out("No open review.");
 	out(`${bold(v.title || v.id)} ${dim(`${v.id} · ${v.status} · ${v.pending} to decide · ${v.accepted} accepted · ${v.rejected} rejected`)}`);
+	if (v.status === "open") out(dim(`branch ${v.branch}${v.compareUrl ? ` · ${v.compareUrl}` : ""}`));
 	for (const w of v.warnings) out(`⚠ ${w}`);
 	out();
 	let scope = "";
@@ -187,16 +190,18 @@ function printRun(r: RunInfo): string {
 
 // ── commands ─────────────────────────────────────────────────────────────
 
-const HELP = `wmem — memory for pi agents, kept in Dolt (https://127.0.0.1:7433 is the web UI)
+const HELP = `wmem — memory for pi agents, kept in a git repository (http://127.0.0.1:7433 is the web UI)
 
-  wmem serve                          run the server (Dolt + API + web UI)
+  wmem serve                          run the server (API + web UI)
   wmem service install|uninstall|status|restart   keep the server running (launchd)
-  wmem status                         memory, the open review, dreams
+  wmem init [--repo <git url>] [--branch <name>] [--from <ref>]
+                                      set up the memory repository (before the first start; see below)
+  wmem status                         memory, the open review, dreams, the remote
   wmem open                           open the web UI
 
 memory
   wmem notes [--scope <id|name>] [-q <text>] [--all]      list notes (--all: also off and archived)
-  wmem note <id> [--history]          show a note
+  wmem note <id> [--history]          show a note (and where its file is)
   wmem note add --title <t> [--body <b>] [--scope <id>] [--index always|pointer|none] [--type <t>] [--when <w>]
   wmem note edit <id> [--title …] [--body …] [--when …] [--index …] [--type …] [--scope …]
   wmem note off|on|pin|unpin|close|reopen|delete <id>
@@ -230,13 +235,16 @@ dreams
   wmem dream schedule on|off          let the server dream on its own
 
 setup
-  wmem import [--from ~/.pi/memory] [--overwrite] [--prune]   take over a pi-dream memory repository
-  wmem export <dir>                   notes as Markdown files
+  wmem init --repo git@github.com:you/pi-memory.git --branch v2
+                                      clone the repository into ~/.wierd-mem/memory and make <branch> the approved one
+                                      (created from --from, default the remote's main branch, when it does not exist)
+  wmem sync                           exchange with the remote now: pull what it has, push
+  wmem import [--from ~/.pi/memory]   take over pi-dream's local state: sessions read, inbox, digests, settings
   wmem config [<key> [<value>]]       settings (e.g. schedule.enabled true)
-  wmem push                           push approved memory to the Dolt remote (remote.url)
   wmem herdr install                  install the Herdr mod
-  wmem sql ["<query>"] [--state]      SQL on the memory database (no query: a shell); --state: inbox, runs, reviews
-                                      e.g. wmem sql "select * from dolt_log limit 5"
+
+Notes are files: ~/.wierd-mem/memory/scopes/<scope>/notes/*.md. Edit one in an editor and the server commits it;
+git log, git diff <approved>...review/<id> and GitHub show the rest.
 
 --json prints the server's answer as is.`;
 
@@ -288,8 +296,10 @@ async function main(): Promise<void> {
 				out(`review    ${s.review ? `${s.review.pending} to decide — ${s.review.title} ${dim(`(${s.url}/#/review)`)}` : "nothing to review"}`);
 				const d = s.dream;
 				out(`dream     ${d.running ? `running (${d.running.id}, ${ago(d.running.startedAt)})` : d.last ? `last ${d.last.status} ${ago(d.last.finishedAt ?? d.last.startedAt)}` : "none yet"} ${dim(`· ${d.scheduled ? (d.due.due ? "due" : "not due") : "schedule off"}: ${d.due.reason}`)}`);
-				out(`storage   ${s.home}/dolt ${dim(`· dolt ${s.dolt.version} on :${s.dolt.port}, database ${s.dolt.database}`)}`);
-				if (s.remote.url) out(`remote    ${s.remote.url}${s.remote.lastPush ? dim(` · pushed ${ago(s.remote.lastPush)}`) : ""}${s.remote.error ? ` — ${s.remote.error}` : ""}`);
+				out(`storage   ${s.git.dir} ${dim(`· git, branch ${s.git.branch} at ${s.git.head.slice(0, 8)}`)}`);
+				const r = s.remote;
+				if (r.url) out(`remote    ${r.url} ${dim(`· ${r.sync ? "syncing" : "sync off"}${r.lastPush ? ` · pushed ${ago(r.lastPush)}` : ""}${r.lastFetch ? ` · fetched ${ago(r.lastFetch)}` : ""}`)}${r.error ? ` — ${r.error}` : ""}`);
+				else out(`remote    none ${dim(`(git -C ${s.git.dir} remote add ${r.name || "origin"} <url>)`)}`);
 			});
 		}
 
@@ -513,30 +523,20 @@ async function main(): Promise<void> {
 		}
 
 		case "import": {
-			const r = await api<Record<string, unknown> & { warnings: string[] }>("POST", "/api/import", { from: str(a.flags.from), overwrite: a.flags.overwrite === true, prune: a.flags.prune === true });
+			const r = await api<Record<string, unknown> & { warnings: string[] }>("POST", "/api/import", { from: str(a.flags.from) });
 			return show(r, () => {
-				out(`imported from ${r.from}: ${r.notes} notes in ${r.scopes} scopes, ${r.skills} skills, ${r.prompts} prompt overrides`);
-				out(`state: ${r.sessions} sessions already read, ${r.inbox} inbox items, ${r.rejected} rejected titles, ${r.runs} past dreams${r.digests ? ", session digests copied" : ""}${r.settings ? ", settings taken from pi-dream" : ""}`);
-				if (r.commit) out(dim(`commit ${String(r.commit).slice(0, 8)}`));
+				out(`from ${r.from}: ${r.sessions} sessions already read, ${r.inbox} inbox items, ${r.rejected} rejected titles${r.digests ? ", session digests copied" : ""}${r.settings ? ", settings taken from pi-dream" : ""}`);
 				for (const w of r.warnings) out(`⚠ ${w}`);
 			});
 		}
 
-		case "export": {
-			if (!sub) throw new ApiFailure(400, "wmem export <dir>");
-			const dir = resolve(sub);
-			const { notes } = await get<{ notes: NoteView[] }>("/api/notes");
-			const used = new Set<string>();
-			for (const n of notes) {
-				const folder = join(dir, "scopes", n.scope, "notes");
-				mkdirSync(folder, { recursive: true });
-				let name = slugify(n.title);
-				for (let i = 2; used.has(`${n.scope}/${name}`); i++) name = `${slugify(n.title)}-${i}`;
-				used.add(`${n.scope}/${name}`);
-				writeFileSync(join(folder, `${name}.md`), serializeNote(n), "utf-8");
-			}
-			return out(`${notes.length} notes written to ${dir}/scopes`);
+		case "sync": {
+			const r = await api<{ message: string }>("POST", "/api/sync", {});
+			return out(r.message);
 		}
+
+		case "init":
+			return init(a);
 
 		case "config": {
 			const cfg = await get<Record<string, unknown>>("/api/config");
@@ -559,24 +559,7 @@ async function main(): Promise<void> {
 				else cur = cur[k] = { ...(src && typeof src === "object" ? (src as object) : {}) } as Record<string, unknown>;
 			});
 			const next = await api<Record<string, unknown>>("PUT", "/api/config", patch);
-			return out(`${sub} = ${JSON.stringify(read(next))}${path[0] === "port" || path[0] === "doltPort" ? " (takes effect when the server restarts)" : ""}`);
-		}
-
-		case "push": {
-			const r = await api<{ message: string }>("POST", "/api/push", {});
-			return out(r.message);
-		}
-
-		case "sql": {
-			// `dolt` talks to the running server: a query, or an interactive SQL shell.
-			const cfg = loadConfig();
-			const db = a.flags.state ? "wmem_state" : "wmem";
-			const query = [sub, ...rest].filter(Boolean).join(" ");
-			const args = ["--host", "127.0.0.1", "--port", String(cfg.doltPort), "--no-tls", "-u", "root", "-p", "", "--use-db", db, "sql", ...(query ? ["-q", query] : [])];
-			const r = spawnSync(process.env.WMEM_DOLT_BIN || "dolt", args, { stdio: "inherit" });
-			if (r.error) throw new ApiFailure(500, `could not run dolt: ${r.error.message}`);
-			process.exitCode = r.status ?? 0;
-			return;
+			return out(`${sub} = ${JSON.stringify(read(next))}${path[0] === "port" || sub === "memory.dir" || sub === "memory.branch" ? " (takes effect when the server restarts)" : ""}`);
 		}
 
 		case "service":
@@ -589,6 +572,66 @@ async function main(): Promise<void> {
 		default:
 			throw new ApiFailure(400, `unknown command "${cmd}" — wmem help`);
 	}
+}
+
+// ── the memory repository ────────────────────────────────────────────────
+
+/**
+ * Set the repository up before the server first starts: clone it (or adopt
+ * the folder that is there), and make the wanted branch the approved one.
+ * Without `--repo` the server makes an empty repository by itself.
+ */
+async function init(a: Args): Promise<void> {
+	const cfg = loadConfig();
+	const paths = homePaths(undefined, cfg.memory.dir);
+	const dir = paths.memory;
+	const repo = str(a.flags.repo);
+	const branch = str(a.flags.branch) ?? cfg.memory.branch;
+	const remote = cfg.memory.remote || "origin";
+	const must = async (cwd: string, args: string[], what: string) => {
+		const r = await git(cwd, args, { timeoutMs: 180_000 });
+		if (r.code !== 0) throw new ApiFailure(1, `${what}: ${r.stderr.trim() || `git exit ${r.code}`}`);
+		return r.stdout.toString().trim();
+	};
+	try {
+		await fetch(`${base()}/api/status`, { signal: AbortSignal.timeout(800) });
+		throw new ApiFailure(1, "the server is running: stop it first (wmem service uninstall, or Ctrl+C), then run init, then start it again");
+	} catch (err) {
+		if (err instanceof ApiFailure) throw err;
+	}
+	if (!existsSync(join(dir, ".git"))) {
+		if (!repo) {
+			out(`no repository at ${dir} and no --repo given: the server will start an empty one there (branch ${branch})`);
+		} else {
+			if (existsSync(dir) && readdirSync(dir).length) throw new ApiFailure(1, `${dir} exists and is not a git repository`);
+			mkdirSync(join(dir, ".."), { recursive: true });
+			await must(join(dir, ".."), ["clone", "-q", "-o", remote, repo, dir], "clone");
+			out(`cloned ${repo} into ${dir}`);
+		}
+	} else if (repo) {
+		const cur = (await git(dir, ["remote", "get-url", remote])).stdout.toString().trim();
+		if (!cur) await must(dir, ["remote", "add", remote, repo], "remote add");
+		else if (cur !== repo) throw new ApiFailure(1, `${dir} already has remote ${remote} = ${cur}`);
+	}
+	if (existsSync(join(dir, ".git"))) {
+		await git(dir, ["fetch", "-q", remote], { timeoutMs: 120_000 });
+		const has = async (ref: string) => (await git(dir, ["rev-parse", "-q", "--verify", ref])).code === 0;
+		if (await has(`refs/heads/${branch}`)) await must(dir, ["checkout", "-q", branch], "checkout");
+		else if (await has(`refs/remotes/${remote}/${branch}`)) await must(dir, ["checkout", "-q", "-b", branch, "--track", `${remote}/${branch}`], "checkout");
+		else {
+			const from = str(a.flags.from);
+			const start = from ? ((await has(`refs/remotes/${remote}/${from}`)) ? `${remote}/${from}` : from) : "HEAD";
+			const where = start === "HEAD" ? await must(dir, ["rev-parse", "--abbrev-ref", "HEAD"], "rev-parse") : start;
+			await must(dir, ["checkout", "-q", "--no-track", "-b", branch, start], "new branch");
+			out(`started branch ${branch} from ${where}`);
+		}
+		out(`${dir}: on ${branch} at ${(await must(dir, ["rev-parse", "--short", "HEAD"], "rev-parse"))}`);
+	}
+	if (branch !== cfg.memory.branch) {
+		saveConfig({ ...cfg, memory: { ...cfg.memory, branch } });
+		out(`memory.branch = ${branch} (${paths.config})`);
+	}
+	out("next: wmem service install (or wmem serve)");
 }
 
 // ── launchd ──────────────────────────────────────────────────────────────
@@ -679,7 +722,6 @@ function herdrInstall(): void {
 	else out(check.status === 0 ? "herdr-app check: ok" : `herdr-app check failed:\n${check.stdout}${check.stderr}`);
 	const readme = join(src, "README.md");
 	if (existsSync(readme)) out(dim(`how to put it into a layout: ${readme}`));
-	void readFileSync;
 }
 
 main().catch((err) => {

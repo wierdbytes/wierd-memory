@@ -1,10 +1,12 @@
 /**
- * The server against a real Dolt: hand edits, a dream's proposals, a review
- * decided item by item, the branch kept in step with main. Needs `dolt` on PATH.
+ * The server on a real git repository: hand edits, a dream's proposals, a
+ * review decided item by item, the review branch kept in step with the
+ * approved one, a remote. Needs `git` on PATH.
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -22,10 +24,13 @@ import {
 } from "@wierd-mem/core";
 import { App } from "../src/app.ts";
 import { handleApi } from "../src/http.ts";
-import { parseNoteFile } from "../src/importer.ts";
+import { parseNote } from "../src/notefile.ts";
 
 let app: App;
 let home: string;
+/** The memory repository of the server under test. */
+let memDir: string;
+const sh = (cwd: string, ...args: string[]) => execFileSync("git", args, { cwd, encoding: "utf-8" }).trim();
 const ev: Evidence[] = [{ s: "01a1b2c3-0000-7000-8000-000000000001", e: ["aaaa1111"], date: "2026-11-06", kind: "user" }];
 
 async function call<T>(method: string, path: string, body?: unknown, headers: Record<string, string> = {}): Promise<{ status: number; data: T }> {
@@ -95,8 +100,9 @@ const kinds = (v: ReviewView | null) => (v?.items ?? []).map((i) => `${i.kind}:$
 
 beforeAll(async () => {
 	home = mkdtempSync(join(tmpdir(), "wmem-test-"));
-	writeFileSync(join(home, "config.json"), JSON.stringify({ port: 17533, doltPort: 17534 }));
+	writeFileSync(join(home, "config.json"), JSON.stringify({ port: 17533, memory: { branch: "v2" } }));
 	app = await App.start({ home, noSchedule: true, log: () => {} });
+	memDir = join(home, "memory");
 }, 60_000);
 
 afterAll(async () => {
@@ -301,7 +307,7 @@ describe("a dream's proposals go to review", () => {
 		expect(r.data.status).toBe("merged");
 		expect([r.data.pending, r.data.accepted, r.data.rejected]).toEqual([0, 3, 2]);
 		expect(await review()).toBeNull();
-		expect(await app.db.branches()).toEqual(["main"]);
+		expect(await app.repo.branches()).toEqual([]);
 		await loadMain();
 		expect(byTitle("Dotfiles")?.body).toBe("chezmoi apply -v");
 		expect(byTitle("Сессии pi")).toBeTruthy();
@@ -318,7 +324,7 @@ describe("a dream's proposals go to review", () => {
 		const r = await call<ReviewView>("POST", `/api/reviews/${d.result.reviewId}/close`, {});
 		expect(r.data.status).toBe("closed");
 		expect(await app.state.rejectedTitles()).toContain("Совсем лишняя заметка");
-		expect(await app.db.branches()).toEqual(["main"]);
+		expect(await app.repo.branches()).toEqual([]);
 	});
 
 	it("votes, session marks and inbox are taken even when nothing is proposed", async () => {
@@ -347,16 +353,16 @@ describe("a dream's proposals go to review", () => {
 		expect(v.agents.map((a) => [a.status, a.rel])).toEqual([["pending", "AGENTS.md"]]);
 		expect(v.pending).toBe(2);
 		await call("POST", `/api/reviews/${v.id}/accept`, { keys: ["skill:global/release-it"] });
-		expect(readFileSync(join(home, "skills", "global", "release-it", "SKILL.md"), "utf-8")).toContain("description: \"How to release\"");
+		expect(readFileSync(join(memDir, "scopes", "global", "skills", "release-it", "SKILL.md"), "utf-8")).toContain("description: \"How to release\"");
 		const ctx = (await call<{ skills: string[] }>("GET", `/api/context?cwd=${encodeURIComponent(home)}`)).data;
-		expect(ctx.skills).toEqual([join(home, "skills", "global")]);
+		expect(ctx.skills).toEqual([join(memDir, "scopes", "global", "skills")]);
 		expect(((await review()) as ReviewView).status).toBe("open");
 		await call("POST", `/api/agents/${v.agents[0].id}/apply`, {});
 		expect(readFileSync(join(repo, "AGENTS.md"), "utf-8")).toBe("# Repo\n\nRun bun test.\n");
 		expect(await review()).toBeNull();
 		expect((await call<ReviewView>("GET", `/api/reviews/${v.id}`)).data.status).toBe("merged");
 		await call("DELETE", "/api/skills?scope=global&name=release-it");
-		expect(existsSync(join(home, "skills", "global", "release-it"))).toBe(false);
+		expect(existsSync(join(memDir, "scopes", "global", "skills", "release-it"))).toBe(false);
 	});
 });
 
@@ -381,37 +387,246 @@ describe("dreams", () => {
 	});
 });
 
-describe("import", () => {
-	it("reads pi-dream note files", () => {
-		const text = `---\nid: m-7f3a2c\ntitle: "Заголовок: с двоеточием"\ntype: procedure\nstatus: active\nindex: pointer\nwhen: "когда нужно"\npinned: true\ncreated: "2026-11-08"\nupdated: "2026-11-09"\nstats: {"helpful": 2, "harmful": 1}\nevidence:\n  - {"s": "abc", "e": ["e1"], "date": "2026-11-06", "at": "2026-11-06T14:05Z", "kind": "user"}\ncustom: 1\n---\n\nТело заметки.\n`;
-		const n = parseNoteFile(text, "global", new Set());
-		expect(n).toMatchObject({ id: "m-7f3a2c", title: "Заголовок: с двоеточием", type: "procedure", index: "pointer", when: "когда нужно", pinned: true, created: "2026-11-08", updated: "2026-11-09", body: "Тело заметки.", extra: { custom: 1 }, stats: { helpful: 2, harmful: 1 } });
-		expect(n.evidence).toEqual([{ s: "abc", e: ["e1"], date: "2026-11-06", at: "2026-11-06T14:05Z", kind: "user" }]);
-		const bare = parseNoteFile("# Просто текст\n\nбез front matter", "global", new Set());
-		expect(bare.id).toMatch(/^m-/);
-		expect(bare.title).toBe("Просто текст");
+describe("memory is a git repository", () => {
+	const notesDir = () => join(memDir, "scopes", "global", "notes");
+	const fileOf = async (id: string) => (await call<{ file: string }>("GET", `/api/notes/${id}`)).data.file;
+
+	it("keeps each note as a file on the approved branch, one commit per change", async () => {
+		expect(sh(memDir, "rev-parse", "--abbrev-ref", "HEAD")).toBe("v2");
+		expect(sh(memDir, "status", "--porcelain")).toBe("");
+		const n = (await call<{ id: string; file: string }>("POST", "/api/notes", { scope: "global", title: "Коммиты подписывать не нужно", body: "Проверено.", index: "pointer", when: "коммит" })).data;
+		expect(n.file).toBe(join(notesDir(), "kommity-podpisyvat-ne-nuzhno.md"));
+		const text = readFileSync(n.file, "utf-8");
+		expect(text).toStartWith(`---\nid: ${n.id}\ntitle: "Коммиты подписывать не нужно"\ntype: fact\nstatus: active\nindex: pointer\nwhen: "коммит"\n`);
+		expect(text).toEndWith("---\n\nПроверено.\n");
+		expect(sh(memDir, "log", "-1", "--format=%an|%s")).toMatch(new RegExp(`\\|add ${n.id}: Коммиты подписывать не нужно$`));
+		expect(sh(memDir, "status", "--porcelain")).toBe("");
+		// the file keeps its name when the title changes, and moves with the note to another scope
+		await call("PATCH", `/api/notes/${n.id}`, { title: "Коммиты не подписываются" });
+		expect(await fileOf(n.id)).toBe(n.file);
+		await call("PATCH", `/api/notes/${n.id}`, { scope: "projects/github.com__o__r" });
+		expect(await fileOf(n.id)).toBe(join(memDir, "scopes/projects/github.com__o__r/notes/kommity-podpisyvat-ne-nuzhno.md"));
+		expect(existsSync(n.file)).toBe(false);
+		expect(JSON.parse(readFileSync(join(memDir, "scopes/projects/github.com__o__r/scope.json"), "utf-8"))).toEqual({ key: "github.com/o/r" });
+		// history follows the file across the move
+		const hist = (await call<Array<{ type: string; changes: Record<string, unknown[]> }>>("GET", `/api/notes/${n.id}/history`)).data;
+		expect(hist.map((h) => h.type)).toEqual(["modified", "modified", "added"]);
+		expect(hist[0].changes.scope).toEqual(["global", "projects/github.com__o__r"]);
+		expect(hist[1].changes.title).toEqual(["Коммиты подписывать не нужно", "Коммиты не подписываются"]);
+		await call("DELETE", `/api/notes/${n.id}`);
+		expect(existsSync(await fileOf(n.id).catch(() => "/nonexistent"))).toBe(false);
+		// a deleted note still has its history, and can be put back
+		const after = (await call<Array<{ type: string; commit: string }>>("GET", `/api/notes/${n.id}/history`)).data;
+		expect(after.map((h) => h.type)).toEqual(["removed", "modified", "modified", "added"]);
+		expect((await call<{ title: string }>("POST", `/api/notes/${n.id}/restore`, { commit: after[1].commit })).data.title).toBe("Коммиты не подписываются");
+		const changes = (await call<{ changes: Array<{ type: string; after?: { id: string } }> }>("GET", `/api/history/${after[1].commit}`)).data.changes;
+		expect(changes.map((c) => [c.type, c.after?.id])).toEqual([["modified", n.id]]);
 	});
 
-	it("takes over a memory repository", async () => {
-		const src = join(home, "old-memory");
-		mkdirSync(join(src, "scopes/global/notes"), { recursive: true });
-		mkdirSync(join(src, "scopes/projects/github.com__o__r/notes"), { recursive: true });
+	it("takes in notes edited or written by hand in an editor", async () => {
+		const ru = (await call<{ notes: Array<{ id: string; title: string; file: string }> }>("GET", "/api/notes?scope=global")).data.notes.find((n) => n.title.startsWith("Отвечать")) as { id: string; file: string };
+		writeFileSync(ru.file, readFileSync(ru.file, "utf-8").replace(/\n\n[\s\S]*$/, "\n\nВсегда, даже если вопрос на английском.\n"));
+		writeFileSync(join(notesDir(), "ruchnaya.md"), "---\ntitle: Написано руками в редакторе\nindex: always\ntype: preference\n---\n\nБез id и дат.\n");
+		writeFileSync(join(notesDir(), "bez-shapki.md"), "# Просто текст\n\nбез front matter\n");
+		const before = (await call<StatusInfo>("GET", "/api/status")).data;
+		await app.refresh();
+		expect(sh(memDir, "status", "--porcelain")).toBe("");
+		expect(sh(memDir, "log", "-1", "--format=%s")).toBe("edit by hand: 3 notes");
+		const after = (await call<StatusInfo>("GET", "/api/status")).data;
+		expect(after.memver).not.toBe(before.memver);
+		expect(after.rev).toBeGreaterThan(before.rev);
+		expect((await call<{ body: string }>("GET", `/api/notes/${ru.id}`)).data.body).toBe("Всегда, даже если вопрос на английском.");
+		const notes = (await call<{ notes: Array<{ id: string; title: string; reach: string; created: string; file: string }> }>("GET", "/api/notes?scope=global")).data.notes;
+		const hand = notes.find((n) => n.title === "Написано руками в редакторе");
+		expect(hand?.id).toMatch(/^m-[0-9a-f]{6}$/);
+		expect([hand?.reach, hand?.created]).toEqual(["always", today()]);
+		expect(readFileSync(hand?.file as string, "utf-8")).toContain(`id: ${hand?.id}\n`);
+		expect(notes.find((n) => n.title === "Просто текст")?.id).toMatch(/^m-/);
+		// a commit made with git itself is noticed too
+		rmSync(join(notesDir(), "bez-shapki.md"));
+		sh(memDir, "commit", "-qam", "drop a note with git");
+		await app.refresh();
+		expect((await call<{ notes: Array<{ title: string }> }>("GET", "/api/notes?scope=global")).data.notes.some((n) => n.title === "Просто текст")).toBe(false);
+		expect((await call<Array<{ message: string }>>("GET", "/api/history?limit=1")).data[0].message).toBe("drop a note with git");
+	});
+
+	it("reads what pi-dream wrote, as it wrote it", () => {
+		const text = `---\nid: m-7f3a2c\ntitle: "Заголовок: с двоеточием"\ntype: procedure\nstatus: active\nindex: pointer\nwhen: "когда нужно"\npinned: true\ncreated: "2026-11-08"\nupdated: "2026-11-09"\nstats: {"helpful": 2, "harmful": 1}\nevidence:\n  - {"s": "abc", "e": ["e1"], "date": "2026-11-06", "at": "2026-11-06T14:05Z", "kind": "user"}\ncustom: 1\n---\n\nТело заметки.\n`;
+		const p = parseNote(text, "global", "2026-11-10");
+		expect(p.note).toMatchObject({ id: "m-7f3a2c", title: "Заголовок: с двоеточием", type: "procedure", index: "pointer", when: "когда нужно", pinned: true, created: "2026-11-08", updated: "2026-11-09", body: "Тело заметки.", extra: { custom: 1 } });
+		expect(p.note.evidence).toEqual([{ s: "abc", e: ["e1"], date: "2026-11-06", at: "2026-11-06T14:05Z", kind: "user" }]);
+		expect([p.stats, p.incomplete]).toEqual([{ helpful: 2, harmful: 1 }, false]);
+		const bare = parseNote("# Просто текст\n\nбез front matter", "global", "2026-11-10");
+		expect([bare.note.id, bare.note.title, bare.note.created, bare.incomplete]).toEqual(["", "Просто текст", "2026-11-10", true]);
+	});
+
+	it("a review is a branch: git shows exactly what is proposed", async () => {
+		const d = await dream([
+			{ op: "add", ref: "g1", scope: "global", type: "fact", title: "Предложение для проверки ветки", body: "x", index: "none", rationale: "", evidence: [] },
+			{ op: "add", ref: "g2", scope: "project:github.com/new/proj", type: "fact", title: "Первая заметка нового проекта", body: "y", index: "none", rationale: "", evidence: [] },
+		]);
+		const v = (await review()) as ReviewView;
+		expect(v.branch).toBe(`review/${d.result.reviewId}`);
+		expect(sh(memDir, "branch", "--list", "review/*").replace(/^[+* ]+/, "")).toBe(v.branch);
+		const proposed = () => sh(memDir, "diff", "--name-status", `v2...${v.branch}`).split("\n").sort();
+		expect(proposed()).toEqual(["A\tscopes/global/notes/predlozhenie-dlya-proverki-vetki.md", "A\tscopes/projects/github.com__new__proj/notes/pervaya-zametka-novogo-proekta.md", "A\tscopes/projects/github.com__new__proj/scope.json"]);
+		expect(sh(memDir, "log", "-1", "--format=%an|%s", v.branch)).toMatch(/^wierd-mem dream\|dream .*: \+2$/);
+		// nothing of it is in the approved folder, and the project is not a scope yet
+		expect(existsSync(join(memDir, "scopes/projects/github.com__new__proj"))).toBe(false);
+		expect(v.items.find((i) => i.scope === "projects/github.com__new__proj")?.scopeName).toBe("proj");
+		// a hand edit of approved memory is merged into the review branch: the difference stays the proposal alone
+		const ru = (await call<{ notes: Array<{ id: string; title: string }> }>("GET", "/api/notes?scope=global")).data.notes.find((n) => n.title.startsWith("Отвечать")) as { id: string };
+		await call("PATCH", `/api/notes/${ru.id}`, { pinned: true });
+		await call("PUT", "/api/scopes/global/charter", { charter: "Только важное." });
+		expect(((await review()) as ReviewView).items.length).toBe(2);
+		expect(sh(memDir, "merge-base", "v2", v.branch)).toBe(sh(memDir, "rev-parse", "v2"));
+		expect(sh(memDir, "log", "-1", "--format=%s|%P", v.branch)).toMatch(/^in step with v2 [0-9a-f]{8}\|[0-9a-f]{40} [0-9a-f]{40}$/);
+		expect(proposed().length).toBe(3);
+		expect(sh(memDir, "show", `${v.branch}:scopes/global/charter.md`)).toBe("Только важное.");
+		// accepting the project's first note brings its folder along; the rest stays proposed
+		await call("POST", `/api/reviews/${v.id}/accept`, { keys: [`note:${d.ids.g2}`] });
+		expect(JSON.parse(readFileSync(join(memDir, "scopes/projects/github.com__new__proj/scope.json"), "utf-8")).key).toBe("github.com/new/proj");
+		expect(proposed()).toEqual(["A\tscopes/global/notes/predlozhenie-dlya-proverki-vetki.md"]);
+		expect(sh(memDir, "status", "--porcelain")).toBe("");
+		await call("POST", `/api/reviews/${v.id}/reject`, {});
+		expect(sh(memDir, "branch", "--list", "review/*")).toBe("");
+		expect(readdirSync(join(memDir, ".local", "worktrees"))).toEqual([]);
+		await call("PUT", "/api/scopes/global/charter", { charter: null });
+	});
+
+	it("keeps what goes on around memory in files under .local, out of git", async () => {
+		expect(sh(memDir, "check-ignore", ".local/state.json")).toBe(".local/state.json");
+		const state = JSON.parse(readFileSync(join(memDir, ".local", "state.json"), "utf-8"));
+		expect(Object.keys(state.sessions)).toEqual(["/s/1.jsonl"]);
+		expect(state.rejected.map((r: { title: string }) => r.title)).toContain("Совсем лишняя заметка");
+		expect(Object.values(state.inbox).every((i) => ["done", "dismissed"].includes((i as { status: string }).status))).toBe(true);
+		const reviews = readdirSync(join(memDir, ".local", "reviews")).map((f) => JSON.parse(readFileSync(join(memDir, ".local", "reviews", f), "utf-8")));
+		expect(reviews.length).toBeGreaterThanOrEqual(3);
+		const first = reviews.sort((a, b) => a.createdAt.localeCompare(b.createdAt))[0];
+		expect([first.status, first.decisions.length, first.comments.length]).toEqual(["merged", 5, 1]);
+		const run = JSON.parse(readFileSync(join(memDir, ".local", "runs", first.runs[0], "run.json"), "utf-8"));
+		expect([run.kind, run.status, run.reviewId]).toEqual(["run", "ok", first.id]);
+		expect(JSON.parse(readFileSync(join(memDir, ".local", "runs", first.runs[0], "report.json"), "utf-8")).items.length).toBe(4);
+		expect(readFileSync(join(memDir, ".local", "inbox", `${today()}.jsonl`), "utf-8").trim().split("\n").length).toBeGreaterThanOrEqual(2);
+	});
+});
+
+describe("a remote", () => {
+	let other: App;
+	let dir: string;
+	let bare: string;
+	let mem: string;
+
+	beforeAll(async () => {
+		dir = mkdtempSync(join(tmpdir(), "wmem-remote-"));
+		bare = join(dir, "remote.git");
+		sh(dir, "init", "-q", "--bare", "-b", "main", bare);
+		// what pi-dream left on main: a note in its format, with its generated index beside it
+		const seed = join(dir, "seed");
+		sh(dir, "init", "-q", "-b", "main", seed);
+		sh(seed, "remote", "add", "origin", bare);
+		mkdirSync(join(seed, "scopes/global/notes"), { recursive: true });
+		writeFileSync(join(seed, ".gitignore"), ".local/\n.DS_Store\n");
+		writeFileSync(join(seed, "scopes/global/MEMORY.md"), "# global\n");
+		writeFileSync(join(seed, "scopes/global/notes/staraya.md"), `---\nid: m-aaaaaa\ntitle: "Заметка из pi-dream"\ntype: fact\nstatus: active\nindex: always\ncreated: "2026-11-01"\nupdated: "2026-11-01"\nstats: {"helpful": 3, "harmful": 0}\n---\n\nтело\n`);
+		sh(seed, "add", "-A");
+		sh(seed, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "pi-dream: notes");
+		sh(seed, "push", "-q", "origin", "HEAD:main");
+		// wierd-mem works on the same repository, on its own branch
+		mem = join(dir, "home", "memory");
+		mkdirSync(join(dir, "home"), { recursive: true });
+		sh(dir, "clone", "-q", bare, mem);
+		sh(mem, "checkout", "-q", "-b", "v2");
+		writeFileSync(join(dir, "home", "config.json"), JSON.stringify({ port: 17543, memory: { branch: "v2", remote: "origin", sync: true } }));
+		other = await App.start({ home: join(dir, "home"), noSchedule: true, log: () => {} });
+	}, 60_000);
+
+	afterAll(async () => {
+		await other?.stop();
+		rmSync(dir, { recursive: true, force: true });
+	});
+
+	const remoteHead = (branch: string) => sh(bare, "rev-parse", "--verify", "-q", `refs/heads/${branch}`);
+
+	it("starts from the branch it is given, with the files as they are", async () => {
+		const notes = await other.views();
+		expect(notes.map((n) => [n.id, n.title, n.reach])).toEqual([["m-aaaaaa", "Заметка из pi-dream", "always"]]);
+		expect(sh(mem, "status", "--porcelain")).toBe("");
+		expect(sh(mem, "log", "--format=%s")).toBe("pi-dream: notes");
+		expect((await other.status()).remote).toMatchObject({ name: "origin", url: bare, sync: true });
+	});
+
+	it("pushes approved memory and the open review, and drops the review's branch when it is over", async () => {
+		await other.createNote({ scope: "global", title: "Новая заметка", body: "b" });
+		expect(await other.sync()).toContain("pushed 1");
+		expect(remoteHead("v2")).toBe(sh(mem, "rev-parse", "v2"));
+		expect(remoteHead("main")).not.toBe(remoteHead("v2"));
+		const run = await other.dreams.begin("run");
+		const ws = await other.dreams.workspace(run.id);
+		const w = new Workspace(ws.notes, today(), { pending: ws.pending, scopes: ws.scopes });
+		applyOp(w, { op: "add", ref: "a", scope: "global", title: "Предложенная", rationale: "", evidence: [] }, { evidence: ev });
+		const res = await other.reviews.submit({ runId: run.id, status: "ok", changes: w.changes(), votes: {}, report: report(run.id), marks: {}, inboxDone: [], commentsDone: [], agents: [], sessions: 0, cost: 0 });
+		await other.sync();
+		const branch = `review/${res.reviewId}`;
+		expect(remoteHead(branch)).toBe(sh(mem, "rev-parse", branch));
+		expect(((await other.reviews.view()) as ReviewView).compareUrl).toBeUndefined(); // not GitHub
+		await other.reviews.accept(res.reviewId as string, undefined, undefined, "test");
+		await other.sync();
+		expect(() => remoteHead(branch)).toThrow();
+		expect(remoteHead("v2")).toBe(sh(mem, "rev-parse", "v2"));
+		expect(sh(bare, "log", "-1", "--format=%s", "v2")).toContain("accept added");
+	});
+
+	it("takes in what the remote has: a merge made elsewhere", async () => {
+		const elsewhere = join(dir, "elsewhere");
+		sh(dir, "clone", "-q", "-b", "v2", bare, elsewhere);
+		writeFileSync(join(elsewhere, "scopes/global/notes/s-drugoy-mashiny.md"), `---\nid: m-bbbbbb\ntitle: "С другой машины"\ntype: fact\nstatus: active\nindex: none\ncreated: "2026-11-02"\nupdated: "2026-11-02"\n---\n\nтело\n`);
+		sh(elsewhere, "add", "-A");
+		sh(elsewhere, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "a note from elsewhere");
+		sh(elsewhere, "push", "-q", "origin", "v2");
+		// meanwhile a change here: both sides have a commit of their own
+		await other.patchNote("m-aaaaaa", { pinned: true });
+		expect(await other.sync()).toContain("took in 1 commit");
+		expect((await other.views()).map((n) => n.id).sort()).toContain("m-bbbbbb");
+		expect(sh(mem, "status", "--porcelain")).toBe("");
+		expect(remoteHead("v2")).toBe(sh(mem, "rev-parse", "v2"));
+		expect(sh(bare, "log", "--format=%s", "-3", "v2").split("\n")).toEqual(expect.arrayContaining(["a note from elsewhere"]));
+	});
+
+	it("takes over pi-dream's local state", async () => {
+		const src = join(dir, "old-memory");
 		mkdirSync(join(src, ".local/inbox"), { recursive: true });
-		writeFileSync(join(src, "scopes/global/notes/a.md"), `---\nid: m-aaaaaa\ntitle: "Импортированная"\ntype: fact\nstatus: active\nindex: always\ncreated: "2026-11-01"\nupdated: "2026-11-01"\n---\n\nтело\n`);
-		writeFileSync(join(src, "scopes/global/charter.md"), "Свой чартер\n");
-		writeFileSync(join(src, "scopes/projects/github.com__o__r/scope.json"), JSON.stringify({ key: "github.com/o/r", root: "/r" }));
-		writeFileSync(join(src, "scopes/projects/github.com__o__r/notes/b.md"), `---\nid: m-bbbbbb\ntitle: "Проектная"\ntype: fact\nstatus: superseded\nindex: none\ncreated: "2026-11-01"\nupdated: "2026-11-01"\n---\n\nтело\n`);
+		mkdirSync(join(src, ".local/digests/proj"), { recursive: true });
+		writeFileSync(join(src, ".local/digests/proj/s1.txt"), "session s1 | project p\n[aaaa0001] USER: привет\n");
 		writeFileSync(join(src, ".local/state.json"), JSON.stringify({ version: 1, cutoffMs: 123, sessions: { "/s/2.jsonl": { size: 1, mtimeMs: 2, at: "x", ok: true, failures: 0 } }, inboxDone: ["i-done"], rejected: [{ title: "Отклонённая раньше", at: "2026-11-01" }], runs: [] }));
 		writeFileSync(join(src, ".local/inbox/2026-11-09.jsonl"), `${JSON.stringify({ id: "i-done", ts: "2026-11-09T10:00:00Z", source: "agent", text: "old", cwd: "/r", projectKey: "github.com/o/r" })}\n${JSON.stringify({ id: "i-new", ts: "2026-11-09T11:00:00Z", source: "user", text: "new", cwd: "/r", projectKey: "github.com/o/r" })}\n`);
-		expect((await call("POST", "/api/import", { from: src })).status).toBe(409);
-		const r = await call<{ notes: number; scopes: number; inbox: number; rejected: number; sessions: number }>("POST", "/api/import", { from: src, overwrite: true });
-		expect(r.data).toMatchObject({ notes: 2, scopes: 2, inbox: 2, rejected: 1, sessions: 1 });
-		expect((await call<{ title: string; reach: string }>("GET", "/api/notes/m-aaaaaa")).data).toMatchObject({ title: "Импортированная", reach: "always" });
-		expect((await call<{ reach: string }>("GET", "/api/notes/m-bbbbbb")).data.reach).toBe("archived");
-		const scopes = (await call<Array<{ id: string; charter: string | null; root: string | null }>>("GET", "/api/scopes")).data;
-		expect(scopes.find((s) => s.id === "global")?.charter).toBe("Свой чартер");
-		expect(scopes.find((s) => s.id === "projects/github.com__o__r")?.root).toBe("/r");
-		expect((await app.state.inbox("pending")).map((i) => i.id)).toEqual(["i-new"]);
-		expect(await app.state.get<number>("cutoffMs")).toBe(123);
+		const { importPiDreamState } = await import("../src/importer.ts");
+		const r = await importPiDreamState(other, { from: src });
+		expect(r).toMatchObject({ sessions: 1, inbox: 2, rejected: 1, digests: true });
+		expect((await other.state.inbox("pending")).map((i) => i.id)).toEqual(["i-new"]);
+		expect((await other.state.inbox("done")).map((i) => i.id)).toEqual(["i-done"]);
+		expect(await other.state.get<number>("cutoffMs")).toBe(123);
+		expect(await other.state.rejectedTitles()).toEqual(["Отклонённая раньше"]);
+		expect((await other.views()).find((n) => n.id === "m-aaaaaa")?.stats).toEqual({ helpful: 3, harmful: 0 });
+		expect(existsSync(join(mem, ".local/digests/proj/s1.txt"))).toBe(true);
+		// again: nothing new
+		expect(await importPiDreamState(other, { from: src })).toMatchObject({ sessions: 0, inbox: 0, rejected: 0 });
+	});
+
+	it("moves to another approved branch later: v2 becomes main", async () => {
+		await other.sync();
+		const before = (await other.views()).map((n) => [n.id, n.title, n.pinned]).sort();
+		sh(mem, "push", "-q", "origin", "v2:main");
+		await other.stop();
+		writeFileSync(join(dir, "home", "config.json"), JSON.stringify({ port: 17543, memory: { branch: "main", remote: "origin", sync: true } }));
+		other = await App.start({ home: join(dir, "home"), noSchedule: true, log: () => {} });
+		expect(sh(mem, "rev-parse", "--abbrev-ref", "HEAD")).toBe("main");
+		await other.sync(); // the local main was behind what was pushed to the remote's
+		expect((await other.views()).map((n) => [n.id, n.title, n.pinned]).sort()).toEqual(before);
+		expect(sh(mem, "rev-parse", "main")).toBe(remoteHead("main"));
+		expect(sh(mem, "status", "--porcelain")).toBe("");
+		expect((await other.status()).git.branch).toBe("main");
+		// the state beside the repository is the same one
+		expect((await other.state.inbox("pending")).map((i) => i.id)).toEqual(["i-new"]);
 	});
 });

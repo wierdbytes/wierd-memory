@@ -1,23 +1,26 @@
 /**
  * Reviews: what dreams propose waits here until a person decides.
  *
- * A review is a Dolt branch off `main` (`review-<id>`). Dreams commit their
- * changes to it; while it is open, later dreams add to it. The items of a
- * review are the difference between `main` and the branch, note by note
- * (`diffNotes`) — so the list always shows exactly what accepting would
- * change, whoever made the change: a dream, a review comment a dream applied,
- * or the reviewer's own edit.
+ * A review is a git branch off the approved one (`review/<id>`), checked out
+ * as a worktree. Dreams commit their changes to it; while it is open, later
+ * dreams add to it. The items of a review are the difference between the
+ * approved branch and the review branch, note by note (`diffNotes`) — so the
+ * list always shows exactly what accepting would change, whoever made the
+ * change: a dream, a review comment a dream applied, or the reviewer's edit.
  *
  * Deciding an item:
- *   accept          the branch's rows are copied to `main` (one commit)
- *   edit and accept the reviewer's text goes to the branch first, then as above
- *   reject          `main`'s rows are copied back to the branch
- * Either way the item's rows become equal on both sides and it leaves the
+ *   accept          the branch's files are copied to the approved branch (one commit)
+ *   edit and accept the reviewer's text goes to the review branch first, then as above
+ *   reject          the approved branch's files are copied back to the review branch
+ * Either way the item's notes become equal on both sides and it leaves the
  * list. When nothing is left the review closes and its branch is deleted.
  *
- * `main` can change while a review is open (hand edits, accepted items).
- * `sync` carries those changes into the branch column by column
- * (`rebaseNotes`), so the branch stays "main + what is still proposed".
+ * The approved branch can change while a review is open (hand edits, accepted
+ * items, a pull). `sync` merges it into the review branch — a real merge
+ * commit, whose content is worked out note by note and column by column
+ * (`rebaseNotes`) rather than line by line. The review branch is thus always
+ * "approved + what is still proposed", locally and in `git diff` or on GitHub
+ * (`<approved>...review/<id>`).
  */
 
 import {
@@ -56,7 +59,7 @@ import {
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { type App, bad, DREAM_AUTHOR, HttpError, notFound, scopeShortName, SYSTEM_AUTHOR } from "./app.ts";
-import { MAIN } from "./dolt.ts";
+import { MAIN, REVIEW_PREFIX } from "./git.ts";
 import type { ScopeRow, SkillRow } from "./memory.ts";
 import type { ReviewRow } from "./state.ts";
 
@@ -89,18 +92,21 @@ export class Reviews {
 
 	// ── keeping the branch in step with main ─────────────────────────────
 
-	/** Carry what `main` changed since the branch last saw it into the branch. */
+	/** Merge what the approved branch changed since the review branch last saw it into the review branch. */
 	async sync(r: ReviewRow): Promise<void> {
-		const { db, mem, state } = this.app;
-		const head = await db.head(MAIN);
+		const { repo, mem, state } = this.app;
+		const head = await repo.head(MAIN);
 		if (r.baseCommit === head) return;
 		const base = r.baseCommit ? await mem.notesAt(r.baseCommit) : await mem.notes(MAIN);
 		const [main, branch] = await Promise.all([mem.notes(MAIN), mem.notes(r.branch)]);
 		const rb = rebaseNotes(base, main, branch);
-		await mem.upsert(r.branch, rb.upsert);
+		const [skillsBase, skillsMain, skillsBranch] = await Promise.all([r.baseCommit ? mem.skillsAt(r.baseCommit) : mem.skills(MAIN), mem.skills(MAIN), mem.skills(r.branch)]);
+		// The merge keeps the review branch's files; what it should take from the approved branch is written below.
+		await repo.beginMerge(r.branch, head);
+		await mem.takeShared(r.branch, head);
+		await mem.upsert(r.branch, rb.upsert, { like: MAIN });
 		await mem.remove(r.branch, rb.remove);
-		// Skills: whole rows. One the branch does not propose a change to follows main.
-		const [skillsBase, skillsMain, skillsBranch] = await Promise.all([r.baseCommit ? this.skillsAt(r.baseCommit) : mem.skills(MAIN), mem.skills(MAIN), mem.skills(r.branch)]);
+		// Skills: whole files. One the review does not propose a change to follows the approved branch.
 		const by = (list: SkillRow[]) => new Map(list.map((s) => [skillKey(s), s]));
 		const [sb, sm, sbr] = [by(skillsBase), by(skillsMain), by(skillsBranch)];
 		for (const key of new Set([...sb.keys(), ...sm.keys()])) {
@@ -109,20 +115,13 @@ export class Reviews {
 			const touched = sb.has(key) !== sbr.has(key) || !sameSkill(sb.get(key), cur);
 			if (touched) continue;
 			const next = sm.get(key);
-			if (next) await mem.upsertSkill(r.branch, next, today());
+			if (next) await mem.upsertSkill(r.branch, next);
 			else if (cur) await mem.removeSkill(r.branch, cur.scope, cur.name);
 		}
-		await mem.copyShared(r.branch);
-		await db.commit(r.branch, `in step with main ${head.slice(0, 8)}`, SYSTEM_AUTHOR);
+		await repo.commit(r.branch, `in step with ${repo.branch} ${head.slice(0, 8)}`, SYSTEM_AUTHOR);
 		r.baseCommit = head;
 		await state.saveReview(r);
-	}
-
-	private async skillsAt(commit: string): Promise<SkillRow[]> {
-		return this.app.db.onBranch(MAIN, async (c) => {
-			const [rows] = await c.query("SELECT scope, name, description, body FROM skills AS OF ?", [commit]);
-			return (rows as Array<Record<string, unknown>>).map((x) => ({ scope: String(x.scope), name: String(x.name), description: String(x.description ?? ""), body: String(x.body ?? "") }));
-		});
+		this.app.pushSoon();
 	}
 
 	// ── what a review holds ──────────────────────────────────────────────
@@ -289,7 +288,9 @@ export class Reviews {
 		if (r.status === "open") {
 			await this.app.lock(() => this.sync(r));
 			const c = await this.compute(r);
-			names = this.scopeNames(scopes, [...c.branch.map((n) => n.scope), ...c.main.map((n) => n.scope)], reports);
+			// A project whose first note is still a proposal has its folder on the review branch only.
+			const proposed = (await mem.scopes(r.branch)).filter((x) => !scopes.some((y) => y.id === x.id));
+			names = this.scopeNames([...scopes, ...proposed], [...c.branch.map((n) => n.scope), ...c.main.map((n) => n.scope)], reports);
 			items = this.items(c, reports, names);
 		}
 		const warnings: string[] = [];
@@ -318,7 +319,14 @@ export class Reviews {
 			sessionTitles: Object.assign({}, ...reports.map((rep) => rep.sessionTitles ?? {})),
 			scopeNames: names,
 			counts,
+			compareUrl: r.status === "open" ? this.compareUrl(r.branch) : undefined,
 		};
+	}
+
+	/** Where GitHub shows the same difference (when the remote is GitHub). */
+	private compareUrl(branch: string): string | undefined {
+		const m = /github\.com[:/]+([^/\s]+)\/([^/\s]+?)(?:\.git)?\/?$/.exec(this.app.remote.url ?? "");
+		return m ? `https://github.com/${m[1]}/${m[2]}/compare/${this.app.repo.branch}...${branch}` : undefined;
 	}
 
 	// ── deciding ─────────────────────────────────────────────────────────
@@ -352,7 +360,7 @@ export class Reviews {
 	accept(reviewId: string, keys: readonly string[] | undefined, edit: NoteEdit | undefined, actor = ""): Promise<ReviewView | null> {
 		return this.app
 			.lock(async () => {
-				const { mem, db, state } = this.app;
+				const { mem, repo, state } = this.app;
 				const r = await this.openById(reviewId);
 				await this.sync(r);
 				let c = await this.compute(r);
@@ -371,8 +379,8 @@ export class Reviews {
 					}
 					const next = this.applyEdit(d.note, edit, r.id);
 					if (next !== d.note) {
-						await mem.upsert(r.branch, [next]);
-						await db.commit(r.branch, `review ${r.id}: edit ${next.id} by hand`, this.app.identity);
+						await mem.upsert(r.branch, [next], { like: MAIN });
+						await repo.commit(r.branch, `review ${r.id}: edit ${next.id} by hand`, this.app.identity);
 						edited.add(diffKey(d));
 						c = await this.compute(r);
 						picked = c.diffs.filter((x) => x.ids.includes(next.id));
@@ -390,24 +398,24 @@ export class Reviews {
 							scopesNeeded.add(n.scope);
 						} else remove.push(id);
 					}
+				// A project's folder (its scope.json) comes along with its first accepted note.
 				const known = new Set((await mem.scopes(MAIN)).map((s) => s.id));
-				for (const scope of scopesNeeded) if (!known.has(scope)) await mem.ensureScope(MAIN, { id: scope, key: keyOfScope(scope) });
-				await mem.upsert(MAIN, upsert);
+				const proposed = await mem.scopes(r.branch);
+				for (const scope of scopesNeeded) {
+					if (known.has(scope)) continue;
+					const meta = proposed.find((x) => x.id === scope);
+					await mem.ensureScope(MAIN, { id: scope, key: meta?.key ?? keyOfScope(scope), root: meta?.root });
+				}
+				await mem.upsert(MAIN, upsert, { like: r.branch });
 				await mem.remove(MAIN, remove);
 				for (const s of skills) {
-					if (s.branch) await mem.upsertSkill(MAIN, s.branch, today());
+					if (s.branch) await mem.upsertSkill(MAIN, s.branch);
 					else if (s.main) await mem.removeSkill(MAIN, s.main.scope, s.main.name);
 				}
 				const total = picked.length + skills.length;
 				const lines = [...picked.map((d) => `${d.kind} ${d.note.id}: ${d.note.title}`), ...skills.map((s) => `skill ${s.key.slice(6)}`)];
 				const message = total === 1 ? `accept ${lines[0]}\n\nreview ${r.id}` : `accept ${total} changes (${countsLabel([...picked, ...skills.map(() => ({ kind: "skill" }))])})\n\nreview ${r.id}\n${lines.map((l) => `- ${l}`).join("\n")}`;
-				const hash = await db.commit(MAIN, actor ? `${message}\nvia ${actor}` : message, this.app.identity);
-				if (hash) {
-					r.baseCommit = await db.head(MAIN);
-					await mem.copyShared(r.branch);
-					await db.commit(r.branch, `in step with main ${r.baseCommit.slice(0, 8)}`, SYSTEM_AUTHOR);
-					await state.saveReview(r);
-				}
+				await repo.commit(MAIN, actor ? `${message}\nvia ${actor}` : message, this.app.identity);
 				const at = new Date().toISOString();
 				for (const d of picked) {
 					const key = diffKey(d);
@@ -415,7 +423,8 @@ export class Reviews {
 				}
 				for (const s of skills) await state.addDecision(r.id, { key: s.key, kind: "skill", title: s.key.slice(6), scope: (s.branch ?? s.main)?.scope, decision: "accepted", at, by: actor || "user" });
 				await this.finishIfDone(r);
-				await this.app.afterMainChange({ skills: skills.length > 0 });
+				// Brings what is left of the review in step with the new commit, and pushes.
+				await this.app.afterMainChange();
 				return r.id;
 			})
 			.then((id) => this.viewAfter(id));
@@ -425,7 +434,7 @@ export class Reviews {
 	reject(reviewId: string, keys: readonly string[] | undefined, reason: string | undefined, actor = ""): Promise<ReviewView | null> {
 		return this.app
 			.lock(async () => {
-				const { mem, db, state } = this.app;
+				const { mem, repo, state } = this.app;
 				const r = await this.openById(reviewId);
 				await this.sync(r);
 				const c = await this.compute(r);
@@ -442,14 +451,14 @@ export class Reviews {
 						if (n) upsert.push(n);
 						else remove.push(id);
 					}
-				await mem.upsert(r.branch, upsert);
+				await mem.upsert(r.branch, upsert, { like: MAIN });
 				await mem.remove(r.branch, remove);
 				for (const s of skills) {
-					if (s.main) await mem.upsertSkill(r.branch, s.main, today());
+					if (s.main) await mem.upsertSkill(r.branch, s.main);
 					else if (s.branch) await mem.removeSkill(r.branch, s.branch.scope, s.branch.name);
 				}
 				const lines = [...picked.map((d) => `${d.kind} ${d.note.id}: ${d.note.title}`), ...skills.map((s) => `skill ${s.key.slice(6)}`)];
-				await db.commit(r.branch, `review ${r.id}: reject ${lines.length === 1 ? lines[0] : `${lines.length} changes\n\n${lines.map((l) => `- ${l}`).join("\n")}`}`, this.app.identity);
+				await repo.commit(r.branch, `review ${r.id}: reject ${lines.length === 1 ? lines[0] : `${lines.length} changes\n\n${lines.map((l) => `- ${l}`).join("\n")}`}`, this.app.identity);
 				const at = new Date().toISOString();
 				for (const d of picked) {
 					await state.addDecision(r.id, { key: diffKey(d), kind: d.kind, noteId: d.note.id, title: d.note.title, scope: d.note.scope, decision: "rejected", at, by: actor || "user", reason });
@@ -458,6 +467,7 @@ export class Reviews {
 				for (const s of skills) await state.addDecision(r.id, { key: s.key, kind: "skill", title: s.key.slice(6), scope: (s.branch ?? s.main)?.scope, decision: "rejected", at, by: actor || "user", reason });
 				await this.finishIfDone(r);
 				this.app.bump("review");
+				this.app.pushSoon();
 				return r.id;
 			})
 			.then((id) => this.viewAfter(id));
@@ -469,7 +479,7 @@ export class Reviews {
 
 	/** Close the review once nothing is left to decide. */
 	private async finishIfDone(r: ReviewRow): Promise<boolean> {
-		const { state, db } = this.app;
+		const { state, repo } = this.app;
 		const c = await this.compute(r);
 		if (c.diffs.length || c.skillDiffs.length) return false;
 		if ((await state.agentsProposals({ reviewId: r.id, status: "pending" })).length) return false;
@@ -479,7 +489,9 @@ export class Reviews {
 		r.closedAt = new Date().toISOString();
 		await state.saveReview(r);
 		try {
-			await db.deleteBranch(r.branch);
+			await repo.deleteBranch(r.branch);
+			this.app.mem.invalidate(r.branch);
+			this.app.pushSoon();
 		} catch (err) {
 			this.app.log(`review ${r.id}: could not delete branch ${r.branch}: ${err instanceof Error ? err.message : err}`);
 		}
@@ -567,7 +579,7 @@ export class Reviews {
 	/** Take a dream's result: its changes go to the review branch, the rest to the state. */
 	submit(sub: DreamSubmit): Promise<DreamSubmitResult> {
 		return this.app.lock(async () => {
-			const { mem, db, state } = this.app;
+			const { mem, repo, state } = this.app;
 			const run = await state.run(sub.runId);
 			if (!run) throw notFound(`run ${sub.runId}`);
 			if (run.status !== "running") throw new HttpError(409, `run ${run.id} is ${run.status}`);
@@ -588,15 +600,11 @@ export class Reviews {
 			let review = await state.openReview();
 			let reviewId: string | undefined;
 			let items = 0;
-			let mainChanged = false;
 			if (hasChanges || sub.agents?.length) {
-				// A project's scope row is not memory: it goes straight to main.
-				for (const s of ch.scopes ?? []) await mem.ensureScope(MAIN, s);
-				if (await db.commit(MAIN, `scopes: ${(ch.scopes ?? []).map((s) => s.id).join(", ")}`, SYSTEM_AUTHOR)) mainChanged = true;
 				if (!review) {
 					const id = newReviewId();
-					review = { id, branch: `review-${id.slice(2)}`, status: "open", title: "", createdAt: finishedAt, baseCommit: await db.head(MAIN), runs: [] };
-					await db.createBranch(review.branch, MAIN);
+					review = { id, branch: `${REVIEW_PREFIX}${id}`, status: "open", title: "", createdAt: finishedAt, baseCommit: await repo.head(MAIN), runs: [] };
+					await repo.createBranch(review.branch, MAIN);
 					await state.saveReview(review);
 				} else {
 					await this.sync(review);
@@ -615,10 +623,13 @@ export class Reviews {
 						const now = cur.get(gone.id);
 						if (now && sameNote(now, gone)) remove.push(gone.id);
 					}
-					await mem.upsert(review.branch, upsert);
+					// A project that gets its first note: its folder (scope.json) is proposed with the note.
+					const known = new Set((await mem.scopes(review.branch)).map((x) => x.id));
+					for (const sc of ch.scopes ?? []) if (!known.has(sc.id)) await mem.ensureScope(review.branch, sc);
+					await mem.upsert(review.branch, upsert, { like: MAIN });
 					await mem.remove(review.branch, remove);
-					for (const s of ch.skills) await mem.upsertSkill(review.branch, s, today());
-					await db.commit(review.branch, `${title}\n\nrun ${run.id}`, DREAM_AUTHOR);
+					for (const s of ch.skills) await mem.upsertSkill(review.branch, s);
+					await repo.commit(review.branch, `${title}\n\nrun ${run.id}`, DREAM_AUTHOR);
 				}
 				for (const a of sub.agents ?? []) await state.addAgentsProposal({ ...a, runId: run.id, reviewId: review.id });
 				if (!review.runs.includes(run.id)) review.runs.push(run.id);
@@ -635,8 +646,8 @@ export class Reviews {
 				await state.saveReview(review);
 				await this.finishIfDone(review);
 			}
-			if (mainChanged) await this.app.afterMainChange();
-			else this.app.bump("dream");
+			this.app.bump("dream");
+			this.app.pushSoon();
 			return { status, reviewId, url: reviewId ? `${this.app.url}/#/review` : undefined, items };
 		});
 	}

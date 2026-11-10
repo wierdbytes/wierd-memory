@@ -122,6 +122,11 @@ export function NoteDetail({ id, scopes, notes }: Props) {
 							</span>
 						) : null}
 					</div>
+					{n.file ? (
+						<div className="detail-dates">
+							<CopyButton text={n.file} label={<span className="mono">{n.file.replace(/^.*\/scopes\//, "scopes/")}</span>} title="The note is this file in the memory repository: copy its path. Edit it in an editor and the server commits the change." />
+						</div>
+					) : null}
 
 					<div className="detail-actions">
 						{n.enabled ? (

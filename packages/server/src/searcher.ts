@@ -30,7 +30,7 @@ import {
 	snippet,
 } from "@wierd-mem/core";
 import type { App } from "./app.ts";
-import { MAIN } from "./dolt.ts";
+import { MAIN } from "./git.ts";
 
 type DigestMeta = { sessionId: string; entryId?: string; dir: string };
 

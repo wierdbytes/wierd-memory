@@ -18,7 +18,8 @@ Top to bottom:
   (red: over the index budget), grey ring + "off": turned off, dash: archived.
   A note's card has its text, when it applies, where it came from (sessions, the cited lines,
   ↗ opens the session in a peek panel) and actions: **Turn off / on**, **Edit** (applied at once),
-  **Pin / Unpin**, copy its id, open it in the browser.
+  **Pin / Unpin**, open its file in `$EDITOR` (notes are Markdown files in a git repository: save,
+  and the server commits the edit), copy its id, open it in the browser.
 - **Footer**: the dream's state, "Review N" (goes to the proposals), the inbox count, a link to the web UI.
 
 It follows the server live (`GET /api/wait`); when the server is away it says so

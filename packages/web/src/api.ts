@@ -146,5 +146,5 @@ export const api = {
 	saveConfig: (patch: Partial<WmemConfig>) => put<WmemConfig>("/api/config", patch),
 	prompts: () => get<PromptsInfo>("/api/prompts"),
 	setPrompt: (name: string, body: string | null) => put<{ ok: boolean }>(`/api/prompts/${enc(name)}`, { body }),
-	push: () => post<{ message: string }>("/api/push"),
+	sync: () => post<{ message: string }>("/api/sync"),
 };

@@ -14,7 +14,7 @@
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { DreamSubmit, DreamSubmitResult, DreamWorkspace, RunInfo } from "@wierd-mem/core";
-import { wmemHome } from "@wierd-mem/core";
+import { homePaths, loadConfig, wmemHome } from "@wierd-mem/core";
 import { Client } from "./client.ts";
 import { Llm } from "./llm.ts";
 import { dream, parseRunArgs, type RunArgs, runLogger } from "./pipeline.ts";
@@ -29,7 +29,7 @@ export async function runDream(ctx: ExtensionContext, args: RunArgs): Promise<vo
 		runId = run.id;
 	}
 	const id = runId;
-	const log = runLogger(wmemHome(), id);
+	const log = runLogger(homePaths(wmemHome(), loadConfig().memory.dir).runs, id);
 	const controller = new AbortController();
 	let timer: ReturnType<typeof setTimeout> | undefined;
 	try {

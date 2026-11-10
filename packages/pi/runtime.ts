@@ -206,7 +206,7 @@ export class Runtime {
 			const s = await this.client.get<StatusInfo>("/api/status", 5000);
 			const d = s.dream;
 			return [
-				`server:   ${s.url} (wierd-mem ${s.version}, dolt ${s.dolt.version} on :${s.dolt.port})`,
+				`server:   ${s.url} (wierd-mem ${s.version}; memory in ${s.git.dir}, branch ${s.git.branch})`,
 				`memory:   ${s.notes.active} notes in ${s.notes.scopes} scopes${s.notes.off ? `, ${s.notes.off} off` : ""} · at ${s.memver}`,
 				session,
 				`project:  ${snap?.projectKey ?? "(resolving)"}`,

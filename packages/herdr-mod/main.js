@@ -30,6 +30,8 @@ const RETRY_MS = 5_000;
 const RETRY_SLOW_MS = 30_000;
 // "Accept all" asks again: the second click counts for this long.
 const CONFIRM_MS = 4_000;
+// "Open file" runs $VISUAL, else $EDITOR, else this, in a split beside the focused pane.
+const EDITOR = "nvim";
 // A review card's keys on a Russian layout (the same physical keys).
 const LATIN = { "ф": "a", "у": "e", "ч": "x" };
 
@@ -560,6 +562,22 @@ export default class WierdMem extends View {
   async shell() {
     if (!this.shellPath) this.shellPath = (await exec("/bin/sh", ["-c", 'printf %s "$SHELL"'])).stdout.trim() || "/bin/zsh";
     return this.shellPath;
+  }
+
+  // A path with the home folder as ~.
+  tilde(path) {
+    const h = home();
+    return path && h && path.startsWith(h) ? `~${path.slice(h.length)}` : path;
+  }
+
+  // The note's file in an editor, in a split beside the focused pane, started
+  // in the memory repository. Notes are plain files there: the server commits
+  // a saved edit by itself and the panel shows it a moment later.
+  openFile(file, cx) {
+    cx.spawn(async () => {
+      const shell = await this.shell();
+      run("terminal.open", { argv: [shell, "-lic", `exec \${VISUAL:-\${EDITOR:-${EDITOR}}} "$1"`, shell, file], folder: this.status?.git?.dir ?? undefined, place: "right" });
+    });
   }
 
   // A new pi on the session, in the peek panel with Keep and Close

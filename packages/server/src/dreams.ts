@@ -11,7 +11,7 @@
  * reads the new sessions, and hands back what it proposes
  * (`POST /api/dream/submit`); the server writes that to the review branch.
  * The server only schedules, starts, watches and stops the process, and keeps
- * its log (`logs/dreams/<run>.log`).
+ * its log (`.local/logs/<run>.log` in the memory repository).
  *
  * One dream at a time. With `schedule.enabled`, the server checks every few
  * minutes whether one is due (enough new sessions, enough time since the last).
@@ -33,7 +33,7 @@ import {
 	type RunInfo,
 } from "@wierd-mem/core";
 import { type App, bad, HttpError, notFound } from "./app.ts";
-import { MAIN } from "./dolt.ts";
+import { MAIN } from "./git.ts";
 
 const MINUTE = 60_000;
 const DAY = 86_400_000;
@@ -292,7 +292,7 @@ export class Dreams {
 		const [notes, mainIds, scopes, prompts, marks, rejected, inbox, comments, agents] = await Promise.all([
 			this.app.notes(ref),
 			mem.noteIds(MAIN),
-			mem.scopes(MAIN),
+			mem.scopes(ref),
 			mem.prompts(MAIN),
 			state.marks(),
 			state.rejectedTitles(40),

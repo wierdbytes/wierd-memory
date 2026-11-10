@@ -22,6 +22,8 @@ export interface NoteView extends Note {
 	reach: Reach;
 	/** Short name of the note's scope (`Global`, `herdr-app`). */
 	scopeName: string;
+	/** The note's file in the memory repository (absolute path). */
+	file?: string;
 }
 
 export interface ScopeInfo {
@@ -238,6 +240,8 @@ export interface ReviewView extends ReviewSummary {
 	/** Scope id → name, for every scope the items mention. */
 	scopeNames: Record<string, string>;
 	counts: Partial<Record<ItemKind, number>>;
+	/** Where the same difference can be seen on the remote (GitHub: approved branch ... review branch). */
+	compareUrl?: string;
 }
 
 /** Text of a note as edited by the reviewer before accepting. */
@@ -385,8 +389,10 @@ export interface StatusInfo {
 	inbox: number;
 	review: ReviewSummary | null;
 	dream: { running: RunInfo | null; last: RunInfo | null; due: DueCheck; scheduled: boolean };
-	dolt: { port: number; database: string; version: string };
-	remote: { url: string; autoPush: boolean; lastPush?: string; error?: string };
+	/** The repository memory is kept in: its folder, the approved branch and the commit it is at. */
+	git: { dir: string; branch: string; head: string };
+	/** The remote it is pushed to (`url` null: none), and how the last exchange went. */
+	remote: { name: string; url: string | null; sync: boolean; lastPush?: string; lastFetch?: string; error?: string };
 }
 
 export interface ApiError {
