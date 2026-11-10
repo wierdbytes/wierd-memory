@@ -1,25 +1,32 @@
-// Memory: what wierd-memory remembers for pi, beside Files and Changes.
+// Memory: what wierd-memory remembers for pi, beside Files and Changes, drawn
+// like the sidebar (the wierd-agents mod): a list of cards on the chrome.
 //
-// Like Files it follows the focused pane: that pane's project and the global
-// notes open on top (what pi loads into a session there), every other project
-// folds below them. A mark says how a note reaches pi: always in its context,
-// read when relevant, or found by search only. A note opens as a card with
-// where it came from: the sessions it cites, the lines it cites, and ↗ to open
-// such a session in the peek panel. What dreams propose (everything still to
-// decide, on the dreams branch) sits on top, to accept, edit or reject; then the inbox (what waits for the next
-// dream); the dream's state is at the bottom.
+// Top to bottom: Review (what dreams propose, to accept, edit or reject), Inbox
+// (what waits for the next dream), the focused pane's project and Global (what
+// pi loads into a session there), then every other project, folded. A mark says
+// how a note reaches pi: always in its context, read when relevant, or found by
+// search only. Actions come in three steps, so nothing is crowded: a row's
+// frequent ones show under the pointer (✓ ✕ on a proposal), a card (Enter) has
+// its main ones as buttons, and everything else is in a menu (⋯, a right click,
+// `.`): close, move, delete, history, a reason, a comment for the dream, a new
+// dream... The dream's state is at the bottom, its menu behind it.
 //
 // Memory lives in the wierd-memory server (a local HTTP API, see api.js); this
-// file asks it and draws the list. cards.js draws a note, review.js a proposal.
+// file asks it, keeps what the panel shows and does what it's asked. list.js
+// draws the list, cards.js a note (and the forms), review.js a proposal, menu.js
+// the menus: a copy of this mod opened as a popup or a dialog (see init).
 
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, TextareaState } from "gpui-base";
-import { spaces, panes, focused, layout, exec, hc, theme, settings, run, terminals, openOverlay, notify, appHome, home, nextCommand, readTextFile } from "herdr";
+import { spaces, panes, focused, layout, exec, hc, theme, settings, run, terminals, openOverlay, notify, appHome, home, nextCommand, readTextFile, props } from "herdr";
 import { Api, DEFAULT_SERVER } from "./api.js";
-import { icon, mono, mark, hint, button, iconButton } from "./ui.js";
-import { norm, words, hay, snippet, twoLines, ago, stamp, running } from "./text.js";
-import { noteCard, inboxCard } from "./cards.js";
-import { reviewRow, agentsRow, reviewCard, agentsCard, reviewHay, agentsHay, countsLine } from "./review.js";
+import { icon, mono, hint, iconButton, backButton, scopeAvatar, leadIcon, spaceColors } from "./ui.js";
+import { ago, stamp, running, plural, projectScope } from "./text.js";
+import { scrollList } from "./scroll.js";
+import { buildList } from "./list.js";
+import { noteCard, inboxCard, skillCard, scopeCard, noteForm, textForm } from "./cards.js";
+import { reviewCard, agentsCard, commentsView, decidedView, aboutView, summary, countsLine } from "./review.js";
+import { MenuPopup, Dialog, menuItems, menuHeight, menuWidth } from "./menu.js";
 
 // The server answers a waiting request (GET /api/wait) as soon as anything
 // changes, or after this many seconds.
@@ -28,12 +35,12 @@ const WAIT_S = 25;
 // tries) this often.
 const RETRY_MS = 5_000;
 const RETRY_SLOW_MS = 30_000;
-// "Accept all" asks again: the second click counts for this long.
-const CONFIRM_MS = 4_000;
-// "Open file" runs $VISUAL, else $EDITOR, else this, in a split beside the focused pane.
+// "Open the file" runs $VISUAL, else $EDITOR, else this, in a split beside the focused pane.
 const EDITOR = "nvim";
-// A review card's keys on a Russian layout (the same physical keys).
-const LATIN = { "ф": "a", "у": "e", "ч": "x" };
+// The keys on a Russian layout (the same physical keys).
+const LATIN = { "ф": "a", "у": "e", "ч": "x", "shift-ч": "shift-x", "Ч": "shift-x", "с": "c", "щ": "o", "з": "p", "о": "j", "л": "k", "ю": "." };
+// The dialog is this wide (a menu: as its widest item).
+const DIALOG_W = 420;
 
 // Where the focused pane works (as Files reads it). Memory lives on this
 // computer, so a pane on another machine has no project here.
@@ -70,9 +77,28 @@ function onScreen() {
 }
 
 const message = (e) => String(e?.message ?? e).slice(0, 300);
+// A menu's or a question's name in the command that answers it: random, so
+// another copy of the panel never takes it for its own.
+const token = () => Math.random().toString(36).slice(2, 10);
+// What the cursor is on, as a name that outlives a reload of the list.
+const targetKey = (x) => !x ? null
+  : x.kind === "review" ? `r:${x.item.key}`
+  : x.kind === "agents" ? `a:${x.proposal.id}`
+  : x.kind === "inbox" ? `i:${x.item.id}`
+  : x.kind === "note" ? `n:${x.note.id}`
+  : x.kind === "skill" ? `s:${x.skill.scope}/${x.skill.name}`
+  : x.kind === "fold" ? `f:${x.key}`
+  : `v:${x.view.kind}`;
 
 export default class WierdMemory extends View {
   init(_props, cx) {
+    // A copy opened as the panel's menu or question draws only that.
+    const p = props();
+    if (p?.menu || p?.dialog) {
+      this.overlay = p.menu ? new MenuPopup() : new Dialog();
+      this.overlay.init(cx);
+      return;
+    }
     // Set once server.json is read (`wmem herdr install` writes it).
     this.server = DEFAULT_SERVER;
     this.api = null;
@@ -82,24 +108,41 @@ export default class WierdMemory extends View {
     // cwd → the project pi loads memory for there (the server resolves it).
     this.contexts = new Map();
     this.asked = new Set();
-    // Which groups are open, as the person left them (the defaults aren't kept).
+    // Which cards and folds are open, as the person left them (the defaults aren't kept).
     this.open = JSON.parse(localStorage.getItem("open") ?? "{}");
-    // The open card: { kind: "note" | "inbox" | "review" | "agents", id }; null: the list.
+    // The open page: { kind: "note" | "inbox" | "review" | "agents" | "skill" | "scope", id }
+    // or { kind: "comments" | "decided" | "about" }; null: the list.
     this.view = null;
-    // The edit form over a note's or a proposal's card: { target, id, index, type, was }.
+    // A form over the page (or the list): { kind: "edit" | "review" | "new" |
+    // "remember" | "comment" | "reason" | "charter", ... }.
     this.form = null;
-    // Folded parts of the open card.
+    // Folded parts of the open page.
     this.fold = {};
     // A request that changes memory is running ("accept", "save"…): buttons wait.
     this.busy = null;
     // Evidence read so far: session id → { name, started, cwd, file, entries }.
     this.ev = {};
+    // Read when a page asks: a note's history, a scope's session text, the
+    // default purposes, older decisions.
+    this.history = {};
+    this.sessionText = {};
+    this.prompts = null;
+    this.decisions = null;
+    // A proposal's reach, type or scope chosen on its card, until it's accepted:
+    // key → { version, edit } (a proposal a dream rewrote since drops it).
+    this.drafts = {};
+    // The menu and the question waiting for their answer: { token, items } / { token, then }.
+    this.pending = null;
+    this.asking = null;
     this.query = "";
     this.cursor = -1;
+    this.cursorKey = null;
     this.flat = [];
+    this.hovered = null;
     this.width = 368;
-    // Changing it starts the list at its top again.
-    this.listAt = 0;
+    // The list's scroll position; `follow`: bring the cursor's row into view.
+    this.scroll = {};
+    this.follow = false;
     this.handle = cx.focus_handle();
     // The text fields that have the keyboard now.
     this.fields = new Set();
@@ -112,56 +155,90 @@ export default class WierdMemory extends View {
         this.fields.delete(name);
         cx.notify();
       });
+      return state;
     };
-    this.input = InputState.new({ placeholder: "Search memory" });
+    this.input = track("search", InputState.new({ placeholder: "Search memory" }));
     this.input.on("change", (_e, cx) => {
       const q = this.input.value();
       if (q === this.query) return;
       this.query = q;
       this.cursor = q.trim() ? 0 : -1;
+      this.cursorKey = null;
+      this.scroll.offset = 0;
       cx.notify();
     });
     this.input.on("submit", (_e, cx) => this.openAt(this.cursor, cx));
-    track("search", this.input);
-    this.fTitle = InputState.new({ placeholder: "One line: what pi should know" });
-    this.fWhen = InputState.new({ placeholder: "When it applies (empty: always)" });
-    this.fBody = TextareaState.new({ placeholder: "The specifics, in Markdown", rows: 8 });
-    this.fBody.set_auto_grow(6, 40);
-    this.fBody.set_soft_wrap(true);
-    track("title", this.fTitle);
-    track("when", this.fWhen);
-    track("body", this.fBody);
-    // In the form ⌘Enter saves; Enter in a one-line field goes to the next one.
+    const area = (name, placeholder, rows = 5) => {
+      const s = TextareaState.new({ placeholder, rows });
+      s.set_auto_grow(rows, 30);
+      s.set_soft_wrap(true);
+      return track(name, s);
+    };
+    this.fTitle = track("title", InputState.new({ placeholder: "One line: what pi should know" }));
+    this.fWhen = track("when", InputState.new({ placeholder: "When it applies (empty: always)" }));
+    this.fBody = area("body", "The specifics, in Markdown", 8);
+    this.fRemember = area("remember", "What the next dream should know");
+    this.fComment = area("comment", "“Split it”, “move it to Global”, “shorter”…", 3);
+    this.fReason = track("reason", InputState.new({ placeholder: "Why not (for the next dream)" }));
+    this.fCharter = area("charter", "What belongs in this scope", 4);
+    // In a form ⌘Enter saves; Enter in a one-line field goes to the next one.
     const submit = (state, next) => state.on("submit", (e, cx) => {
       if (!this.form) return;
-      if (e?.secondary) this.save(cx);
+      if (e?.secondary || next === "save") this.save(cx);
       else next?.focus();
     });
     submit(this.fTitle, this.fWhen);
     submit(this.fWhen, this.fBody);
-    submit(this.fBody, null);
+    for (const s of [this.fBody, this.fRemember, this.fComment, this.fCharter]) submit(s, null);
+    submit(this.fReason, "save");
     cx.spawn((cx) => this.live(cx));
     // keys.json: "wierd-memory.search" puts the keyboard in the search field;
     // "wierd-memory.open-<note id>" opens that note's card; "wierd-memory.review"
-    // goes to what dreams propose.
+    // goes to what dreams propose. A menu's or a question's answer comes this way too.
     cx.spawn(async (cx) => {
       for (;;) {
         const c = await nextCommand();
-        if (c === "search") {
-          this.leave();
-          this.input.focus();
-        } else if (c === "review") {
-          this.goReview();
-          this.handle.focus();
-        } else if (c === "focus") {
-          this.handle.focus();
-        } else if (c.startsWith("open-")) {
-          const found = this.noteById(c.slice(5));
-          if (found) this.show(found, cx);
+        // One command failing (a menu item on something that went meanwhile)
+        // must not end the loop: every later menu and question answers through it.
+        try {
+          this.command(c, cx);
+        } catch (e) {
+          notify({ title: "Memory: that didn't work", body: message(e), level: "error" });
         }
         cx.notify();
       }
     });
+  }
+
+  command(c, cx) {
+    if (c === "search") {
+      this.leave();
+      this.input.focus();
+    } else if (c === "review") {
+      this.goReview();
+      this.handle.focus();
+    } else if (c === "focus") {
+      if (!this.typing) this.handle.focus();
+    } else if (c.startsWith("open-")) {
+      const found = this.noteById(c.slice(5));
+      if (found) this.show(found, cx);
+    } else if (c.startsWith("menu-")) {
+      const [, tok, i] = /^menu-([a-z0-9]+)-(\d+)$/.exec(c) ?? [];
+      if (tok && this.pending?.token === tok) {
+        const it = this.pending.items[Number(i)];
+        this.pending = null;
+        if (!this.form) this.handle.focus();
+        it?.run?.(cx);
+      }
+    } else if (c.startsWith("dialog-")) {
+      const tok = c.slice(7);
+      if (this.asking?.token === tok) {
+        const then = this.asking.then;
+        this.asking = null;
+        this.handle.focus();
+        then(cx);
+      }
+    }
   }
 
   get typing() {
@@ -229,18 +306,23 @@ export default class WierdMemory extends View {
     cx.spawn(async (cx) => {
       const api = this.api;
       try {
-        const [status, scopes, notes, inbox, review, context] = await Promise.all([
+        const [status, scopes, notes, inbox, review, skills, context] = await Promise.all([
           api.get("/api/status"),
           api.get("/api/scopes"),
           api.get("/api/notes"),
           api.get("/api/inbox"),
           api.get("/api/review"),
+          api.get("/api/skills").catch(() => []),
           cwd ? api.get(`/api/context?cwd=${encodeURIComponent(cwd)}`).catch(() => null) : null,
         ]);
         this.status = status;
-        this.setData({ scopes, notes: notes?.notes ?? [], inbox: inbox ?? [], review });
+        this.setData({ scopes, notes: notes?.notes ?? [], inbox: inbox ?? [], review, skills: skills ?? [] });
         if (cwd && context) this.setContext(cwd, context);
         this.error = null;
+        // What a page read may have changed with memory: read again what shows.
+        this.history = {};
+        this.sessionText = {};
+        this.loadPage(cx);
         this.loadEvidence(cx);
       } catch (e) {
         // The waiting loop notices a server that went away and says so.
@@ -256,7 +338,7 @@ export default class WierdMemory extends View {
     });
   }
 
-  setData({ scopes, notes, inbox, review }) {
+  setData({ scopes, notes, inbox, review, skills }) {
     const byScope = new Map();
     const byId = new Map();
     for (const n of notes) {
@@ -264,11 +346,12 @@ export default class WierdMemory extends View {
       if (!byScope.has(n.scope)) byScope.set(n.scope, []);
       byScope.get(n.scope).push(n);
     }
-    this.data = { scopes, byScope, byId, inbox, review: review ?? null };
+    this.data = { scopes, byScope, byId, inbox, review: review ?? null, skills };
   }
 
   setContext(cwd, c) {
-    this.contexts.set(cwd, { scope: c.scope ?? null, name: c.project?.name ?? "", key: c.project?.key ?? "" });
+    const key = c.project?.key ?? "";
+    this.contexts.set(cwd, { scope: c.scope ?? null, name: c.project?.name ?? "", key, root: c.project?.root ?? null, newScope: !c.scope && key ? projectScope(key) : null });
   }
 
   // The project of a folder the focused pane moved to.
@@ -281,6 +364,61 @@ export default class WierdMemory extends View {
         // Asked again once the server answers (see live()).
       }
     });
+  }
+
+  // A small read for the open page, once: the note's history (its fold open),
+  // the scope's purpose and session text.
+  loadPage(cx) {
+    const v = this.view;
+    if (v?.kind === "note" && this.fold.history) this.loadHistory(v.id, cx);
+    if (v?.kind === "scope") {
+      if (!this.prompts) this.read("prompts", "/api/prompts", (out) => (this.prompts = out), cx);
+      if (this.fold.session) this.loadSessionText(v.id, cx);
+    }
+  }
+
+  // GET `path` in the background, once at a time per `name`; `set` takes the answer.
+  read(name, path, set, cx, fail) {
+    this.reading ??= new Set();
+    if (this.reading.has(name) || !this.api) return;
+    this.reading.add(name);
+    cx.spawn(async (cx) => {
+      try {
+        set(await this.api.get(path));
+      } catch (e) {
+        fail?.(message(e));
+      } finally {
+        this.reading.delete(name);
+        cx.notify();
+      }
+    });
+  }
+
+  loadHistory(id, cx) {
+    if (this.history[id]?.entries) return;
+    this.history[id] ??= { loading: true };
+    this.read(`history:${id}`, `/api/notes/${encodeURIComponent(id)}/history`, (entries) => (this.history[id] = { entries: entries ?? [] }), cx, (error) => (this.history[id] = { error }));
+  }
+
+  loadSessionText(scopeId, cx) {
+    if (this.sessionText[scopeId]?.text !== undefined) return;
+    const scope = this.data?.scopes.find((s) => s.id === scopeId);
+    const cwd = scopeId === "global" ? home() || "/" : scope?.root;
+    if (!cwd) {
+      this.sessionText[scopeId] = { error: "the project's folder isn't known" };
+      return;
+    }
+    this.sessionText[scopeId] ??= { loading: true };
+    this.read(`session:${scopeId}`, `/api/context?cwd=${encodeURIComponent(cwd)}`, (c) => (this.sessionText[scopeId] = { text: c?.injection?.text ?? null, tokens: c?.injection?.tokens ?? 0 }), cx, (error) => (this.sessionText[scopeId] = { error }));
+  }
+
+  loadDecisions(cx) {
+    if (this.busy) return;
+    this.busy = "more";
+    this.read("decisions", "/api/review/decisions?limit=200", (list) => {
+      this.decisions = list ?? [];
+      this.busy = null;
+    }, cx, () => (this.busy = null));
   }
 
   // What the open card cites: each session's name and the cited lines of its digest.
@@ -327,7 +465,7 @@ export default class WierdMemory extends View {
     });
   }
 
-  // ── actions ─────────────────────────────────────────────────────────────
+  // ── what is where ───────────────────────────────────────────────────────
 
   isOpen(key, fallback) {
     return key in this.open ? this.open[key] : fallback;
@@ -339,23 +477,101 @@ export default class WierdMemory extends View {
     cx.notify();
   }
 
+  noteById(id) {
+    const note = this.data?.byId.get(id);
+    return note ? { kind: "note", note, scope: this.data.scopes.find((s) => s.id === note.scope) ?? null } : null;
+  }
+
+  // The proposal about a note, if one waits.
+  proposalOf(noteId) {
+    const item = this.data?.review?.items.find((x) => (x.ids ?? []).includes(noteId));
+    return item ? { kind: "review", item } : null;
+  }
+
+  // What still waits for a decision: notes and skills, then AGENTS.md proposals.
+  proposals() {
+    const r = this.data?.review;
+    if (!r) return [];
+    return [...r.items.map((item) => ({ kind: "review", item })), ...(r.agents ?? []).filter((p) => p.status === "pending" || p.status === "failed").map((proposal) => ({ kind: "agents", proposal }))];
+  }
+
+  // Every scope a note can go to: the approved ones, and the focused project's
+  // when it has no memory yet.
+  scopeChoices() {
+    const list = [...(this.data?.scopes ?? [])];
+    const ctx = this.ctx;
+    if (ctx?.newScope && !list.some((s) => s.id === ctx.newScope)) list.push({ id: ctx.newScope, key: ctx.key, name: ctx.name, root: ctx.root });
+    return list;
+  }
+
+  // The open page's note, inbox item, proposal…, from the latest read; gone if it went.
+  current() {
+    const v = this.view, d = this.data;
+    if (!v || !d) return null;
+    switch (v.kind) {
+      case "note":
+        return this.noteById(v.id) ?? { kind: "gone" };
+      case "inbox": {
+        const item = d.inbox.find((x) => x.id === v.id);
+        return item ? { kind: "inbox", item } : { kind: "gone" };
+      }
+      case "review": {
+        const item = d.review?.items.find((x) => x.key === v.id);
+        return item ? { kind: "review", item, review: d.review } : { kind: "gone" };
+      }
+      case "agents": {
+        const proposal = d.review?.agents?.find((x) => x.id === v.id && (x.status === "pending" || x.status === "failed"));
+        return proposal ? { kind: "agents", proposal, review: d.review } : { kind: "gone" };
+      }
+      case "skill": {
+        const skill = (d.skills ?? []).find((s) => s.scope === v.scope && s.name === v.name);
+        return skill ? { kind: "skill", skill } : { kind: "gone" };
+      }
+      case "scope": {
+        const scope = d.scopes.find((s) => s.id === v.id);
+        return scope ? { kind: "scope", scope } : { kind: "gone" };
+      }
+      default:
+        return { kind: v.kind };
+    }
+  }
+
+  // ── going places ────────────────────────────────────────────────────────
+
+  // A page by itself (comments, decisions, a scope).
+  go(view, cx) {
+    this.view = view;
+    this.form = null;
+    this.fold = {};
+    this.decisions = null;
+    this.fields.clear();
+    this.handle.focus();
+    this.loadPage(cx);
+    cx.notify();
+  }
+
+  // A row's page: a note, a proposal, an inbox item, a skill.
   show(item, cx) {
-    this.view =
+    const view =
       item.kind === "note" ? { kind: "note", id: item.note.id }
       : item.kind === "inbox" ? { kind: "inbox", id: item.item.id }
       : item.kind === "review" ? { kind: "review", id: item.item.key }
-      : { kind: "agents", id: item.proposal.id };
-    this.form = null;
-    this.fold = {};
-    this.fields.clear();
+      : item.kind === "agents" ? { kind: "agents", id: item.proposal.id }
+      : item.kind === "skill" ? { kind: "skill", scope: item.skill.scope, name: item.skill.name }
+      : null;
+    if (!view) return;
+    this.go(view, cx);
     this.loadEvidence(cx);
-    this.handle.focus();
-    cx.notify();
   }
 
   openAt(i, cx) {
     const item = this.flat[i];
-    if (item) this.show(item, cx);
+    if (!item) return;
+    this.cursor = i;
+    this.cursorKey = targetKey(item);
+    if (item.kind === "fold") this.toggle(item.key, item.fallback, cx);
+    else if (item.kind === "view") this.go(item.view, cx);
+    else this.show(item, cx);
   }
 
   // Back to the list, without a redraw of its own.
@@ -363,6 +579,8 @@ export default class WierdMemory extends View {
     this.view = null;
     this.form = null;
     this.fields.clear();
+    // The row it came from stays in view.
+    this.follow = true;
   }
 
   back(cx) {
@@ -371,7 +589,7 @@ export default class WierdMemory extends View {
     cx.notify();
   }
 
-  // The list with the Review group open, from its top, the cursor on its first row.
+  // The list with Review open, from its top, the cursor on its first proposal.
   goReview() {
     this.leave();
     if (this.query) {
@@ -380,47 +598,113 @@ export default class WierdMemory extends View {
     }
     this.open.review = true;
     localStorage.setItem("open", JSON.stringify(this.open));
-    this.listAt += 1;
-    this.want = { review: 0 };
+    this.scroll.offset = 0;
+    this.cursorKey = targetKey(this.proposals()[0]);
+    this.follow = true;
   }
 
-  // The open card's note, inbox item or proposal, from the latest read; gone if it went.
-  current() {
-    const v = this.view, d = this.data;
-    if (!v || !d) return null;
-    if (v.kind === "note") return this.noteById(v.id) ?? { kind: "gone" };
-    if (v.kind === "inbox") {
-      const item = d.inbox.find((x) => x.id === v.id);
-      return item ? { kind: "inbox", item } : { kind: "gone" };
+  // The next or previous proposal's card, from a proposal's card.
+  step(dir, cx) {
+    const all = this.proposals();
+    const v = this.view;
+    const at = all.findIndex((p) => (p.kind === "review" ? v?.kind === "review" && p.item.key === v.id : v?.kind === "agents" && p.proposal.id === v.id));
+    const next = all[at + dir];
+    if (next) this.show(next, cx);
+  }
+
+  // After deciding the proposal at `at` from its card: the card of the one now in its place.
+  advance(at, cx) {
+    const all = this.proposals();
+    this.form = null;
+    this.fields.clear();
+    if (all.length) {
+      const next = all[Math.min(at, all.length - 1)];
+      this.cursorKey = targetKey(next);
+      this.show(next, cx);
+    } else this.leave();
+  }
+
+  hover(id, over, cx) {
+    if (over && Date.now() - (this.scrolledAt ?? 0) < 300) return;
+    const next = over ? id : this.hovered === id ? null : this.hovered;
+    if (next === this.hovered) return;
+    this.hovered = next;
+    cx.notify();
+  }
+
+  // ── a choice on a card ──────────────────────────────────────────────────
+
+  // What the person chose for a proposal and hasn't accepted yet: { index?, type?, scope? }.
+  draftOf(item) {
+    const d = this.drafts[item.key];
+    return d && d.version === item.version ? d.edit : {};
+  }
+
+  clearDraft(item, cx) {
+    delete this.drafts[item.key];
+    cx.notify();
+  }
+
+  // A note's or a proposal's index, type or scope as its chip shows it.
+  chosen(subject, field) {
+    if (subject.kind === "note") return subject.note[field];
+    return this.draftOf(subject.item)[field] ?? (field === "scope" ? subject.item.scope : subject.item.note[field]);
+  }
+
+  // A chip's choice: a note's is saved at once; a proposal's waits for Accept
+  // (choosing what it was takes the change back).
+  choose(subject, field, value, cx) {
+    if (subject.kind === "note") {
+      if (subject.note[field] !== value) this.patchNote(subject.note, { [field]: value }, cx);
+      return;
     }
-    if (v.kind === "review") {
-      const item = d.review?.items.find((x) => x.key === v.id);
-      return item ? { kind: "review", item, review: d.review } : { kind: "gone" };
+    const item = subject.item;
+    const edit = { ...this.draftOf(item) };
+    if (value === (field === "scope" ? item.scope : item.note[field])) delete edit[field];
+    else edit[field] = value;
+    if (Object.keys(edit).length) this.drafts[item.key] = { version: item.version, edit };
+    else delete this.drafts[item.key];
+    cx.notify();
+  }
+
+  // ── menus and questions ─────────────────────────────────────────────────
+
+  // The menu of what the panel shows: a popup at the pointer (menu.js).
+  menu(target, cx) {
+    const items = menuItems(this, target).filter(Boolean);
+    if (!items.length) return;
+    const tok = token();
+    this.pending = { token: tok, items };
+    // What the popup draws: everything but what an item does.
+    const shown = items.map(({ run: _run, ...it }) => ({ ...it, hint: it.hint ?? "", danger: Boolean(it.danger), sep: Boolean(it.sep), off: Boolean(it.off), check: Boolean(it.check) }));
+    openOverlay({ mod: "wierd-memory", kind: "popup", width: menuWidth(shown), height: menuHeight(shown), props: { menu: { token: tok, items: shown } } });
+    cx.notify();
+  }
+
+  // Asks before something that can't be taken back in one click; `then(cx)` on yes.
+  ask({ title, detail, confirm, danger = false }, then) {
+    const tok = token();
+    this.asking = { token: tok, then };
+    const lines = Math.ceil(String(detail).length / 55);
+    openOverlay({ mod: "wierd-memory", kind: "dialog", width: DIALOG_W, height: 128 + lines * 19, props: { dialog: { token: tok, title, detail, confirm, danger } } });
+  }
+
+  // The menu of the cursor's row (`.`), or of the open page.
+  menuHere(cx) {
+    const card = this.current();
+    if (card && card.kind !== "gone") {
+      const page = card.kind === "note" ? { kind: "note", note: card.note } : card.kind === "review" ? { kind: "review", item: card.item } : card.kind === "agents" ? { kind: "agents", proposal: card.proposal } : card.kind === "inbox" ? { kind: "inbox", item: card.item } : card.kind === "skill" ? { kind: "skill", skill: card.skill } : card.kind === "scope" ? { kind: "scope", scope: card.scope } : null;
+      if (page) this.menu(page, cx);
+      return;
     }
-    const proposal = d.review?.agents?.find((x) => x.id === v.id && x.status === "pending");
-    return proposal ? { kind: "agents", proposal, review: d.review } : { kind: "gone" };
+    const x = this.flat[this.cursor];
+    if (x && ["note", "review", "agents", "inbox", "skill"].includes(x.kind)) this.menu(x, cx);
   }
 
-  noteById(id) {
-    const note = this.data?.byId.get(id);
-    return note ? { kind: "note", note, scope: this.data.scopes.find((s) => s.id === note.scope) ?? null } : null;
-  }
-
-  // How many proposals wait for a decision (0: nothing to decide, no Review group).
-  toDecide() {
-    const r = this.data?.review;
-    return r ? (r.pending ?? this.proposals().length) : 0;
-  }
-
-  // What still waits for a decision: notes and skills, then AGENTS.md proposals.
-  proposals() {
-    const r = this.data?.review;
-    if (!r) return [];
-    return [...r.items.map((item) => ({ kind: "review", item })), ...(r.agents ?? []).filter((p) => p.status === "pending").map((proposal) => ({ kind: "agents", proposal }))];
-  }
+  // ── actions ─────────────────────────────────────────────────────────────
 
   // One request that changes memory at a time. `then` gets the answer; a
-  // failure is told in a notification and the card stays as it was.
+  // failure is told in a notification and the page stays as it was.
   act(name, failed, request, then, cx) {
     if (this.busy || !this.api) return;
     this.busy = name;
@@ -450,58 +734,70 @@ export default class WierdMemory extends View {
     return { keys: items.map((x) => x.key), versions: Object.fromEntries(items.map((x) => [x.key, x.version])) };
   }
 
-  // After a decision: the list, the cursor on what took the decided row's place.
-  next(at) {
-    this.leave();
-    this.handle.focus();
-    this.want = { review: Math.max(0, at) };
-  }
-
-  // Accept or reject a proposal; `edit`: the text as the person changed it first.
-  decide(what, item, edit, cx) {
+  // Accept or reject a proposal; `edit`: the text as the person changed it
+  // first (else what was chosen on its card); `reason`: why not. From its card,
+  // the next proposal's card follows.
+  decide(what, item, { edit = null, reason = "" } = {}, cx) {
     if (!this.data?.review) return;
+    if (what === "accept" && !edit && Object.keys(this.draftOf(item)).length) edit = this.draftOf(item);
     const at = this.proposals().findIndex((p) => p.kind === "review" && p.item.key === item.key);
-    const body = { ...this.pick([item]), ...(edit ? { edit } : {}) };
-    this.act(what, what === "accept" ? "Couldn't accept it" : "Couldn't reject it", (api) => api.post(`/api/review/${what}`, body), (out) => {
+    const inCard = this.view?.kind === "review" && this.view.id === item.key;
+    const body = { ...this.pick([item]), ...(edit ? { edit } : {}), ...(reason ? { reason } : {}) };
+    this.act(what, what === "accept" ? "Couldn't accept it" : "Couldn't reject it", (api) => api.post(`/api/review/${what}`, body), (out, cx) => {
+      delete this.drafts[item.key];
       this.setReview(out);
-      this.next(at);
+      if (inCard) this.advance(at, cx);
+      else if (this.form?.kind === "reason") this.closeForm(cx);
     }, cx);
   }
 
-  // "Accept all": the first click asks, the second (soon after) does it.
-  acceptAll(cx) {
-    const items = this.data?.review?.items ?? [];
-    if (!items.length || this.busy) return;
-    if (!this.sure || Date.now() - this.sure > CONFIRM_MS) {
-      const at = (this.sure = Date.now());
-      cx.timer.after(CONFIRM_MS, (cx) => {
-        if (this.sure === at) this.sure = 0;
-        cx.notify();
-      });
-      cx.notify();
-      return;
-    }
-    this.sure = 0;
-    // Only what the panel shows: never `all`, which would take in what a dream proposed since.
-    this.act("accept", "Couldn't accept them", (api) => api.post("/api/review/accept", this.pick(items)), (out) => {
+  // Many proposals at once (those shown: never `all`, which would take in what a dream proposed since).
+  // An edit goes with one proposal only: those with choices made on their cards
+  // are accepted one by one with them first, the rest together.
+  decideMany(what, items, reason, cx) {
+    const drafted = what === "accept" ? items.filter((i) => Object.keys(this.draftOf(i)).length) : [];
+    const rest = items.filter((i) => !drafted.includes(i));
+    this.act(what, what === "accept" ? "Couldn't accept them" : "Couldn't reject them", async (api) => {
+      let out = null;
+      for (const i of drafted) out = await api.post("/api/review/accept", { ...this.pick([i]), edit: this.draftOf(i) });
+      if (rest.length) out = await api.post(`/api/review/${what}`, { ...this.pick(rest), ...(reason ? { reason } : {}) });
+      return out;
+    }, (out, cx) => {
+      for (const i of items) delete this.drafts[i.key];
       this.setReview(out);
-      this.want = { review: 0 };
+      if (this.form) this.closeForm(cx);
+      if (this.view?.kind === "review" && items.some((i) => i.key === this.view.id)) this.leave();
+      this.cursorKey = targetKey(this.proposals()[0]);
+      notify({ title: `${what === "accept" ? "Accepted" : "Rejected"} ${plural(items.length, "proposal")}`, level: "success" });
     }, cx);
+  }
+
+  // "Accept all" (or a scope's, the confirmations): asks first.
+  acceptMany(items, what, cx) {
+    if (!items.length || this.busy) return;
+    const always = items.filter((i) => i.reach === "always" && i.kind !== "confirmed").length;
+    const risky = items.filter((i) => i.risky?.length).length;
+    this.ask({
+      title: `Accept ${plural(items.length, "proposal")}?`,
+      detail: `${what} become memory in one commit: ${summary(items)}.${always ? ` ${plural(always, "note")} will be in the context of every session of its scope.` : ""}${risky ? ` ${plural(risky, "proposal")} carry a risky-content warning.` : ""}`,
+      confirm: `Accept ${items.length}`,
+    }, (cx) => this.decideMany("accept", items, null, cx));
   }
 
   // Apply or reject an AGENTS.md proposal.
   agents(what, proposal, cx) {
     const at = this.proposals().findIndex((p) => p.kind === "agents" && p.proposal.id === proposal.id);
-    this.act(what, what === "apply" ? `Couldn't apply it to ${proposal.rel}` : "Couldn't reject it", (api) => api.post(`/api/agents/${encodeURIComponent(proposal.id)}/${what}`, {}), (out) => {
+    const inCard = this.view?.kind === "agents" && this.view.id === proposal.id;
+    this.act(what, what === "apply" ? `Couldn't apply it to ${proposal.rel}` : "Couldn't reject it", (api) => api.post(`/api/agents/${encodeURIComponent(proposal.id)}/${what}`, {}), (out, cx) => {
       // The answer is what waits for a decision now.
       if (out?.items) this.setReview(out);
       else if (this.data?.review) this.data.review.agents = this.data.review.agents.filter((p) => p.id !== proposal.id);
-      this.next(at);
+      if (inCard) this.advance(at, cx);
       if (what === "apply") notify({ title: `${proposal.rel} edited`, body: `${proposal.projectName}: the change is in the working copy, not committed.`, level: "success" });
     }, cx);
   }
 
-  // A hand change of an approved note: turn off / on, pin, new text.
+  // A hand change of an approved note: turn off / on, pin, close, move, new text.
   patchNote(note, patch, cx, then) {
     this.act("save", "Couldn't change the note", (api) => api.patch(`/api/notes/${encodeURIComponent(note.id)}`, patch), (out) => {
       // Shown at once; the read that follows brings its place in the index.
@@ -510,27 +806,87 @@ export default class WierdMemory extends View {
         Object.assign(old, out);
         old._hay = undefined;
       }
+      if (patch.scope) notify({ title: "Moved", body: `${note.title.slice(0, 80)} → ${out?.scopeName ?? patch.scope}`, level: "success" });
       then?.();
     }, cx);
+  }
+
+  confirmDelete(n, cx) {
+    this.ask({
+      title: "Delete this note?",
+      detail: `“${n.title.slice(0, 140)}” leaves memory for good, and dreams may propose it again. Its history keeps every version (restore one in the browser). To only stop pi from getting it, turn it off instead.`,
+      confirm: "Delete",
+      danger: true,
+    }, (cx) => this.act("delete", "Couldn't delete the note", (api) => api.del(`/api/notes/${encodeURIComponent(n.id)}`), (_out, cx) => {
+      if (this.view?.kind === "note" && this.view.id === n.id) this.leave();
+      notify({ title: "Deleted", body: n.title.slice(0, 120), level: "success" });
+      cx.notify();
+    }, cx));
+  }
+
+  restore(n, entry, cx) {
+    this.ask({
+      title: "Restore this version?",
+      detail: `The note becomes what it was after “${String(entry.message).split("\n")[0].slice(0, 90)}” (${stamp(entry.date)}). It is a new commit: the version now stays in the history.`,
+      confirm: "Restore",
+    }, (cx) => this.act(`restore:${entry.commit}`, "Couldn't restore it", (api) => api.post(`/api/notes/${encodeURIComponent(n.id)}/restore`, { commit: entry.commit }), () => {
+      delete this.history[n.id];
+    }, cx));
+  }
+
+  deleteSkill(s, cx) {
+    this.ask({ title: `Delete the skill ${s.name}?`, detail: "pi stops loading it in this scope's sessions. The repository's history keeps it.", confirm: "Delete", danger: true }, (cx) => this.act("delete", "Couldn't delete the skill", (api) => api.del(`/api/skills?scope=${encodeURIComponent(s.scope)}&name=${encodeURIComponent(s.name)}`), () => {
+      if (this.view?.kind === "skill" && this.view.name === s.name && this.view.scope === s.scope) this.leave();
+    }, cx));
   }
 
   dismiss(item, cx) {
     this.act("dismiss", "Couldn't dismiss it", (api) => api.del(`/api/inbox/${encodeURIComponent(item.id)}`), () => {
       if (this.data) this.data.inbox = this.data.inbox.filter((x) => x.id !== item.id);
-      this.back(cx);
+      if (this.view?.kind === "inbox" && this.view.id === item.id) this.leave();
     }, cx);
   }
 
-  // The card becomes a form with the note's text (a proposal's: as proposed).
-  edit(target, note, cx) {
-    if (this.busy) return;
-    const was = { title: note.title ?? "", body: note.body ?? "", when: note.when ?? "", index: note.index, type: note.type };
-    this.form = { target, id: note.id, index: was.index, type: was.type, was };
-    this.fTitle.set_value(was.title);
-    this.fWhen.set_value(was.when);
-    this.fBody.set_value(was.body);
-    this.fTitle.focus();
-    cx.notify();
+  removeComment(c, cx) {
+    this.act(`uncomment:${c.id}`, "Couldn't delete the comment", (api) => api.del(`/api/review/comments/${encodeURIComponent(c.id)}`), (out) => this.setReview(out), cx);
+  }
+
+  setCharter(scope, charter, cx) {
+    this.act("charter", "Couldn't save the purpose", (api) => api.call("PUT", `/api/scopes/${encodeURIComponent(scope.id)}/charter`, { charter }), () => {
+      if (this.form?.kind === "charter") {
+        this.form = null;
+        this.fields.clear();
+      }
+    }, cx);
+  }
+
+  startDream(mode, cx) {
+    this.act("dream", mode === "review" ? "Couldn't start applying the comments" : "Couldn't start a dream", (api) => api.post("/api/dreams", { mode }), () => {
+      notify({ title: mode === "review" ? "A dream is applying the comments" : "A dream has started", body: "What it proposes shows in Review when it ends.", level: "success" });
+    }, cx);
+  }
+
+  cancelDream(r, cx) {
+    this.act("dream", "Couldn't stop the dream", (api) => api.post(`/api/dreams/${encodeURIComponent(r.id)}/cancel`, {}), null, cx);
+  }
+
+  setSchedule(on, cx) {
+    this.act("config", "Couldn't change the schedule", async (api) => {
+      const cfg = await api.get("/api/config");
+      return api.call("PUT", "/api/config", { schedule: { ...cfg.schedule, enabled: on } });
+    }, () => notify({ title: on ? "Scheduled dreams are on" : "Scheduled dreams are off", body: on ? "The server dreams by itself once enough new sessions wait." : "Dreams run only when you start one.", level: "success" }), cx);
+  }
+
+  sync(cx) {
+    this.act("sync", "Couldn't sync", (api) => api.post("/api/sync", {}), (out) => notify({ title: "Synced", body: out?.message ?? "", level: "success" }), cx);
+  }
+
+  // ── forms ───────────────────────────────────────────────────────────────
+
+  openForm(form, focus) {
+    this.form = form;
+    this.fields.clear();
+    focus?.focus();
   }
 
   closeForm(cx) {
@@ -540,40 +896,165 @@ export default class WierdMemory extends View {
     cx.notify();
   }
 
+  setNoteFields(n) {
+    this.fTitle.set_value(n.title ?? "");
+    this.fWhen.set_value(n.when ?? "");
+    this.fBody.set_value(n.body ?? "");
+  }
+
+  // The note's card becomes a form with its text.
+  editNote(n, cx) {
+    if (this.busy) return;
+    if (this.view?.kind !== "note" || this.view.id !== n.id) this.show({ kind: "note", note: n }, cx);
+    const was = { title: n.title ?? "", body: n.body ?? "", when: n.when ?? "", index: n.index, type: n.type, scope: n.scope };
+    this.setNoteFields(n);
+    this.openForm({ kind: "edit", id: n.id, index: n.index, type: n.type, scope: n.scope, was }, this.fTitle);
+    cx.notify();
+  }
+
+  // A proposal's card becomes a form with its text as proposed; saving accepts it.
+  editProposal(item, cx) {
+    if (this.busy || !item.editable) return;
+    if (this.view?.kind !== "review" || this.view.id !== item.key) this.show({ kind: "review", item }, cx);
+    const n = item.note;
+    const draft = this.draftOf(item);
+    this.setNoteFields(n);
+    this.openForm({ kind: "review", key: item.key, index: draft.index ?? n.index, type: draft.type ?? n.type, scope: draft.scope ?? item.scope, was: { scope: item.scope } }, this.fTitle);
+    cx.notify();
+  }
+
+  newNote(scope, cx) {
+    if (this.busy || !scope) return;
+    this.setNoteFields({});
+    this.openForm({ kind: "new", index: "pointer", type: "fact", scope, was: {} }, this.fTitle);
+    cx.notify();
+  }
+
+  rememberForm(cx) {
+    const ctx = this.ctx;
+    this.fRemember.set_value("");
+    this.openForm({ kind: "remember", where: ctx?.key ? "project" : "global", projectName: ctx?.key ? ctx.name : null, cwd: location().cwd }, this.fRemember);
+    cx.notify();
+  }
+
+  // A comment for the dream: on a proposal's note (`item`), or on the proposals as a whole.
+  commentForm(item, cx) {
+    this.fComment.set_value("");
+    this.openForm({ kind: "comment", noteId: item?.note?.id || null, title: item?.note?.title ?? null }, this.fComment);
+    cx.notify();
+  }
+
+  reasonForm(items, cx) {
+    if (!items.length) return;
+    this.fReason.set_value("");
+    this.openForm({ kind: "reason", items }, this.fReason);
+    cx.notify();
+  }
+
+  charterForm(scope, text, cx) {
+    this.fCharter.set_value(text ?? "");
+    this.openForm({ kind: "charter", scope }, this.fCharter);
+    cx.notify();
+  }
+
   save(cx) {
-    const f = this.form, card = this.current();
-    if (!f || this.busy || !card) return;
+    const f = this.form;
+    if (!f || this.busy) return;
     // ⌘Enter may arrive twice (the field's own submit, then the panel's key).
     if (Date.now() - (this.savedAt ?? 0) < 150) return;
     this.savedAt = Date.now();
-    const now = {
-      title: this.fTitle.value().replace(/\s*\n\s*/g, " ").trim(),
-      body: this.fBody.value().replace(/\s+$/, ""),
-      when: this.fWhen.value().replace(/\s*\n\s*/g, " ").trim(),
-      index: f.index,
-      type: f.type,
-    };
-    if (!now.title) {
-      notify({ title: "A note needs a title", body: "The title is the line pi sees in its context.", level: "error" });
+    const one = (s) => s.value().replace(/\s*\n\s*/g, " ").trim();
+    if (f.kind === "edit" || f.kind === "review" || f.kind === "new") {
+      const now = { title: one(this.fTitle), body: this.fBody.value().replace(/\s+$/, ""), when: one(this.fWhen), index: f.index, type: f.type };
+      if (!now.title) {
+        notify({ title: "A note needs a title", body: "The title is the line pi sees in its context.", level: "error" });
+        return;
+      }
+      if (f.kind === "review") {
+        const card = this.current();
+        if (card?.kind !== "review") return;
+        this.decide("accept", card.item, { edit: { ...now, when: now.when || null, ...(f.scope !== f.was.scope ? { scope: f.scope } : {}) } }, cx);
+        return;
+      }
+      if (f.kind === "new") {
+        this.act("save", "Couldn't add the note", (api) => api.post("/api/notes", { scope: f.scope, title: now.title, body: now.body.trim(), when: now.when || undefined, index: now.index, type: now.type }), (out, cx) => {
+          if (out?.id && this.data) {
+            this.data.byId.set(out.id, out);
+            if (!this.data.byScope.has(out.scope)) this.data.byScope.set(out.scope, []);
+            this.data.byScope.get(out.scope).push(out);
+          }
+          this.form = null;
+          this.fields.clear();
+          if (out?.id) this.go({ kind: "note", id: out.id }, cx);
+        }, cx);
+        return;
+      }
+      const card = this.current();
+      if (card?.kind !== "note") return;
+      const patch = {};
+      for (const k of ["title", "body", "when", "index", "type"]) if (now[k] !== f.was[k]) patch[k] = k === "when" ? now.when || null : now[k];
+      if (f.scope !== f.was.scope) patch.scope = f.scope;
+      if (!Object.keys(patch).length) {
+        this.closeForm(cx);
+        return;
+      }
+      this.patchNote(card.note, patch, cx, () => {
+        this.form = null;
+        this.fields.clear();
+        this.handle.focus();
+      });
       return;
     }
-    if (f.target === "review" && card.kind === "review") {
-      this.decide("accept", card.item, { ...now, when: now.when || null }, cx);
+    if (f.kind === "remember") {
+      const text = this.fRemember.value().trim();
+      if (!text) return;
+      this.act("save", "Couldn't keep it", (api) => api.post("/api/inbox", { text, source: "user", scope: f.where, ...(f.cwd ? { cwd: f.cwd } : {}) }), (_out, cx) => this.closeForm(cx), cx);
       return;
     }
-    if (card.kind !== "note") return;
-    const patch = {};
-    for (const k of ["title", "body", "when", "index", "type"]) if (now[k] !== f.was[k]) patch[k] = k === "when" ? now.when || null : now[k];
-    if (!Object.keys(patch).length) {
-      this.closeForm(cx);
+    if (f.kind === "comment") {
+      const body = this.fComment.value().trim();
+      if (!body) return;
+      this.act("save", "Couldn't save the comment", (api) => api.post("/api/review/comments", f.noteId ? { body, noteId: f.noteId } : { body }), (out, cx) => {
+        this.setReview(out);
+        this.closeForm(cx);
+        notify({ title: "Comment saved for the dream", body: "The next dream applies it, or apply it now from Review's ⋯.", level: "success" });
+      }, cx);
       return;
     }
-    this.patchNote(card.note, patch, cx, () => {
-      this.form = null;
-      this.fields.clear();
-      this.handle.focus();
-    });
+    if (f.kind === "reason") {
+      const reason = one(this.fReason);
+      if (f.items.length === 1) this.decide("reject", f.items[0], { reason }, cx);
+      else this.decideMany("reject", f.items, reason, cx);
+      return;
+    }
+    if (f.kind === "charter") {
+      const text = this.fCharter.value().trim();
+      if (!text) return;
+      this.setCharter(f.scope, text, cx);
+    }
   }
+
+  // ── a note's history, a scope's session text ────────────────────────────
+
+  toggleHistory(n, cx) {
+    this.fold.history = !this.fold.history;
+    if (this.fold.history) this.loadHistory(n.id, cx);
+    cx.notify();
+  }
+
+  showHistory(n, cx) {
+    this.show({ kind: "note", note: n }, cx);
+    this.fold.history = true;
+    this.loadHistory(n.id, cx);
+  }
+
+  toggleSessionText(scope, cx) {
+    this.fold.session = !this.fold.session;
+    if (this.fold.session) this.loadSessionText(scope.id, cx);
+    cx.notify();
+  }
+
+  // ── outside the panel ───────────────────────────────────────────────────
 
   async shell() {
     if (!this.shellPath) this.shellPath = (await exec("/bin/sh", ["-c", 'printf %s "$SHELL"'])).stdout.trim() || "/bin/zsh";
@@ -641,8 +1122,14 @@ export default class WierdMemory extends View {
     cx.notify();
   }
 
+  // ── keys ────────────────────────────────────────────────────────────────
+
   key(e, cx) {
-    const k = e.keystroke;
+    const k = LATIN[e.keystroke] ?? e.keystroke;
+    const done = () => {
+      cx.stop_propagation();
+      cx.notify();
+    };
     if (k === "escape") {
       if (this.form) this.closeForm(cx);
       else if (this.view) this.back(cx);
@@ -651,9 +1138,7 @@ export default class WierdMemory extends View {
         this.query = "";
         this.cursor = -1;
       } else return;
-      cx.stop_propagation();
-      cx.notify();
-      return;
+      return done();
     }
     if (this.form) {
       if (k === "cmd-enter" || k === "ctrl-enter") {
@@ -665,45 +1150,80 @@ export default class WierdMemory extends View {
     if (this.view) {
       // Never while a text field has the keyboard.
       if (this.typing) return;
-      if (k === "backspace") {
-        this.back(cx);
-        cx.stop_propagation();
-        return;
-      }
       const card = this.current();
-      const letter = LATIN[k] ?? k;
-      if (card?.kind === "review") {
-        if (letter === "a") this.decide("accept", card.item, null, cx);
-        else if (letter === "e" && card.item.editable) this.edit("review", card.item.note, cx);
-        else if (letter === "x") this.decide("reject", card.item, null, cx);
+      if (k === "backspace") this.back(cx);
+      else if (k === ".") this.menuHere(cx);
+      else if (card?.kind === "review") {
+        if (k === "a") this.decide("accept", card.item, {}, cx);
+        else if (k === "e" && card.item.editable) this.editProposal(card.item, cx);
+        else if (k === "x") this.decide("reject", card.item, {}, cx);
+        else if (k === "shift-x") this.reasonForm([card.item], cx);
+        else if (k === "c" && card.item.note?.id) this.commentForm(card.item, cx);
+        else if (k === "down" || k === "j") this.step(1, cx);
+        else if (k === "up" || k === "k") this.step(-1, cx);
         else return;
-        cx.stop_propagation();
       } else if (card?.kind === "agents") {
-        if (letter === "a") this.agents("apply", card.proposal, cx);
-        else if (letter === "x") this.agents("reject", card.proposal, cx);
+        if (k === "a") this.agents("apply", card.proposal, cx);
+        else if (k === "x") this.agents("reject", card.proposal, cx);
+        else if (k === "down" || k === "j") this.step(1, cx);
+        else if (k === "up" || k === "k") this.step(-1, cx);
         else return;
-        cx.stop_propagation();
-      }
-      return;
+      } else if (card?.kind === "note") {
+        const n = card.note;
+        if (k === "e") this.editNote(n, cx);
+        else if (k === "o" && n.status === "active") this.patchNote(n, { enabled: n.enabled === false }, cx);
+        else if (k === "p" && n.status === "active") this.patchNote(n, { pinned: !n.pinned }, cx);
+        else return;
+      } else if (card?.kind === "inbox") {
+        if (k === "x") this.dismiss(card.item, cx);
+        else return;
+      } else return;
+      return done();
     }
-    if (k === "down" || k === "up") {
+    // The list. ↑ ↓ work from the search field too.
+    if (k === "down" || k === "up" || (!this.typing && (k === "j" || k === "k"))) {
       if (!this.flat.length) return;
-      const step = k === "down" ? 1 : -1;
-      this.cursor = this.cursor < 0 ? (step > 0 ? 0 : this.flat.length - 1) : Math.max(0, Math.min(this.flat.length - 1, this.cursor + step));
-      cx.stop_propagation();
-      cx.notify();
-    } else if (k === "enter" && !this.typing && this.cursor >= 0) {
-      this.openAt(this.cursor, cx);
-      cx.stop_propagation();
-    } else if (k === "/" && !this.typing) {
-      this.input.focus();
-      cx.stop_propagation();
+      const dir = k === "down" || k === "j" ? 1 : -1;
+      this.cursor = this.cursor < 0 ? (dir > 0 ? 0 : this.flat.length - 1) : Math.max(0, Math.min(this.flat.length - 1, this.cursor + dir));
+      this.cursorKey = targetKey(this.flat[this.cursor]);
+      this.follow = true;
+      return done();
     }
+    if (this.typing) return;
+    if (k === "enter" && this.cursor >= 0) this.openAt(this.cursor, cx);
+    else if (k === "/") this.input.focus();
+    else if (k === ".") this.menuHere(cx);
+    else {
+      // A row's own keys, as in its card.
+      const x = this.flat[this.cursor];
+      if (x?.kind === "review") {
+        if (k === "a") this.decide("accept", x.item, {}, cx);
+        else if (k === "x") this.decide("reject", x.item, {}, cx);
+        else if (k === "e" && x.item.editable) this.editProposal(x.item, cx);
+        else if (k === "shift-x") this.reasonForm([x.item], cx);
+        else if (k === "c" && x.item.note?.id) this.commentForm(x.item, cx);
+        else return;
+      } else if (x?.kind === "agents") {
+        if (k === "a") this.agents("apply", x.proposal, cx);
+        else if (k === "x") this.agents("reject", x.proposal, cx);
+        else return;
+      } else if (x?.kind === "note" && x.note.status === "active") {
+        if (k === "o") this.patchNote(x.note, { enabled: x.note.enabled === false }, cx);
+        else if (k === "p") this.patchNote(x.note, { pinned: !x.note.pinned }, cx);
+        else if (k === "e") this.editNote(x.note, cx);
+        else return;
+      } else if (x?.kind === "inbox") {
+        if (k === "x") this.dismiss(x.item, cx);
+        else return;
+      } else return;
+    }
+    done();
   }
 
   // ── drawing ─────────────────────────────────────────────────────────────
 
   render(cx) {
+    if (this.overlay) return this.overlay.render(cx);
     const t = theme();
     const where = location();
     if (this.api && this.down === false && where.cwd && !this.contexts.has(where.cwd) && !this.asked.has(where.cwd)) {
@@ -716,26 +1236,34 @@ export default class WierdMemory extends View {
       ctx = this.contexts.get(where.cwd) ?? this.lastCtx ?? null;
       if (this.contexts.has(where.cwd)) this.lastCtx = ctx;
     }
+    this.ctx = ctx;
     if (this.stale && this.down === false && onScreen()) {
       this.stale = false;
       this.refresh(cx);
     }
-    // A server that is away shows one line; the open card comes back with it.
+    // A server that is away shows one line; the open page comes back with it.
     const card = this.down ? null : this.current();
-    if (!card || card.kind === "gone" || (card.kind !== "note" && card.kind !== "review")) this.form = null;
+    // A form about a note or a proposal goes with it.
+    if (this.form && (this.form.kind === "edit" || this.form.kind === "review") && card?.kind !== (this.form.kind === "edit" ? "note" : "review")) this.form = null;
     const zoom = settings().zoom || 1;
+    const page = this.form || card;
+    if (this.data) spaceColors(this.data.scopes);
     return v_flex()
       .id("wierd-memory")
       .size_full()
       .min_h(0)
       .rounded(10)
       .overflow_hidden()
-      .bg(t.background)
+      .bg(t.chrome)
       .border_1()
       .border_color(t.border)
       .text_color(t.foreground)
       .text_size(13)
       .track_focus(this.handle)
+      // A press anywhere but a text field gives the panel the keyboard (fields stop their own).
+      .on_mouse_down("left", () => {
+        if (!this.form) this.handle.focus();
+      })
       .on_key_down((e, cx) => this.key(e, cx))
       .on_size_change((size, cx) => {
         const w = size.width / zoom;
@@ -743,44 +1271,23 @@ export default class WierdMemory extends View {
         this.width = w;
         cx.notify();
       })
-      .child(this.header(t, card))
-      .child(v_flex().flex_1().min_h(0)
-        // The list stays while a card shows, so going back finds it where it was.
-        // (Hidden from a box of its own: overflow_y_scrollbar() wraps the list,
-        // and styles set after it reach the inner element only.)
-        .child(v_flex().id("mem-list-box").flex_1().min_h(0).when(Boolean(card), (el) => el.hidden()).child(this.list(t, ctx)))
-        .when(Boolean(card), (el) => el.children(this.card(t, card))))
+      .child(page ? this.pageHeader(t, card) : this.listHeader(t, ctx))
+      .children(page ? this.page(t, card) : [this.list(t, ctx)])
       .child(this.footer(t));
   }
 
-  header(t, card) {
-    const bar = h_flex().h(42).flex_none().gap(8).items_center().border_b(1).border_color(t.border);
-    if (card) {
-      let title = "Memory";
-      let id = "";
-      if (card.kind === "note") id = card.note.id;
-      else if (card.kind === "inbox") {
-        title = "Inbox";
-        id = card.item.id;
-      } else if (card.kind === "review" || card.kind === "agents") {
-        const all = this.proposals();
-        const at = all.findIndex((p) => (p.kind === "review" ? p.item.key === this.view.id : p.proposal.id === this.view.id));
-        title = at >= 0 ? `Review · ${at + 1} of ${all.length}` : "Review";
-        id = card.kind === "review" ? card.item.note?.id || card.item.skill?.name || "" : card.proposal.id;
-      }
-      if (this.form) title = this.form.target === "review" ? "Edit, then accept" : "Edit the note";
-      return bar
-        .pl(8)
-        .pr(14)
-        .child(iconButton(t, "mem-back", "back", this.form ? "Cancel the edit (Esc)" : "Back (Esc)", (_e, cx) => (this.form ? this.closeForm(cx) : this.back(cx))))
-        .child(div().flex_none().font_semibold().child(title))
-        .child(div().flex_1())
-        .when(Boolean(id), (el) => el.child(div().min_w(0).truncate().text_size(11).text_color(t.dim).font_family(mono()).child(id)));
-    }
-    return bar
-      .px(10)
-      .pl(14)
-      .child(div().font_semibold().flex_none().child("Memory"))
+  // ── the list ────────────────────────────────────────────────────────────
+
+  listHeader(t, ctx) {
+    return h_flex()
+      .h(42)
+      .flex_none()
+      .pl(10)
+      .pr(8)
+      .gap(6)
+      .items_center()
+      .border_b(1)
+      .border_color(t.border)
       .child(h_flex()
         .id("mem-search")
         .flex_1()
@@ -789,7 +1296,8 @@ export default class WierdMemory extends View {
         .px(8)
         .gap(6)
         .items_center()
-        .rounded(7)
+        .rounded(8)
+        .bg(t.surface)
         .border_1()
         .border_color(this.fields.has("search") ? t.accent : t.border)
         .cursor_text()
@@ -817,351 +1325,187 @@ export default class WierdMemory extends View {
             this.cursor = -1;
             cx.notify();
           })
-          .child(svg(icon("x")).size(11)))));
+          .child(svg(icon("x")).size(11)))))
+      .child(iconButton(t, "mem-add", "plus", "New note, or something to remember for the next dream", (_e, cx) => this.menu({ kind: "add", ctx }, cx), 28));
   }
-
-  // ── the list ────────────────────────────────────────────────────────────
 
   list(t, ctx) {
-    const body = v_flex().id(`mem-list-${this.listAt}`).size_full().overflow_y_scrollbar().p(6);
+    const box = (children) => v_flex().flex_1().min_h(0).children(children);
     if (this.down) {
       this.flat = [];
-      return body
-        .child(hint(t, "wierd-memory server is not running (wmem serve)"))
-        .child(div().pl(10).pr(10).text_size(11).text_color(t.dim).font_family(mono()).child(this.server));
+      return box([
+        hint(t, "wierd-memory server is not running (wmem serve)"),
+        div().px(10).text_size(11).text_color(t.dim).font_family(mono()).child(this.server),
+      ]).pt(8);
     }
-    const d = this.data;
-    if (!d) return body.child(hint(t, this.error ? `Can't read memory: ${this.error}` : "Loading memory…"));
-    const terms = words(this.query);
-    const searching = terms.length > 0;
-    const hit = (text) => terms.every((w) => text.includes(w));
-    // Titles are sentences: two lines of them, at about 7.5 px a letter of
-    // the room a row's text has (its width less the marks and paddings).
-    const cpl = Math.max(16, Math.floor((this.width - 68) / 7.5));
-    const rows = [];
-    const flat = [];
-    const add = (item, row) => {
-      flat.push(item);
-      rows.push(row(flat.length - 1));
-    };
-    let found = 0;
-
-    // What dreams propose: to decide.
-    const all = this.proposals();
-    if (d.review && this.toDecide() > 0) {
-      const shown = searching ? all.filter((p) => hit(norm(p.kind === "review" ? reviewHay(p.item) : agentsHay(p.proposal)))) : all;
-      found += shown.length;
-      if (shown.length || !searching) {
-        const open = searching || this.isOpen("review", true);
-        rows.push(this.reviewHead(t, d.review, shown.length, all.length, open, searching));
-        // A row's mark on the right takes room from its title.
-        const narrow = Math.max(14, cpl - 3);
-        if (open) for (const p of shown) add(p, (i) => (p.kind === "review" ? reviewRow(this, t, p.item, i, narrow) : agentsRow(this, t, p.proposal, i, cpl)));
-      }
+    if (!this.data) return box([hint(t, this.error ? `Can't read memory: ${this.error}` : "Loading memory…")]).pt(8);
+    let built = buildList(this, t, ctx);
+    // The cursor stays on what it was on (a row decided away: on the one now in its place).
+    const at = this.cursorKey ? built.flat.findIndex((x) => targetKey(x) === this.cursorKey) : -1;
+    const want = at >= 0 ? at : Math.min(this.cursor, built.flat.length - 1);
+    if (want !== this.cursor) {
+      this.cursor = want;
+      built = buildList(this, t, ctx);
     }
-
-    // What waits for the next dream.
-    const inbox = d.inbox.filter((i) => !searching || hit(norm(i.text)));
-    found += inbox.length;
-    if (inbox.length) {
-      const open = searching || this.isOpen("inbox", true);
-      rows.push(this.groupRow(t, "inbox", {
-        name: "Inbox",
-        hint: "for the next dream",
-        count: inbox.length,
-        open,
-        main: true,
-        tip: "Kept with memory_inbox or /remember. The next dream reviews these; they become memory once you accept what it proposes.",
-        onClick: searching ? null : (cx) => this.toggle("inbox", true, cx),
-      }));
-      if (open) for (const item of inbox) add({ kind: "inbox", item }, (i) => this.inboxRow(t, item, i, cpl));
+    this.flat = built.flat;
+    this.cursorKey = targetKey(this.flat[this.cursor]);
+    let followAt = null;
+    if (this.follow && this.cursor >= 0) {
+      followAt = built.items.findIndex((it) => it.at === this.cursor);
+      if (followAt < 0) followAt = null;
     }
-
-    // This project, Global, then the other projects by name.
-    const byId = new Map(d.scopes.map((s) => [s.id, s]));
-    const mine = ctx?.scope ? byId.get(ctx.scope) : null;
-    const groups = [];
-    if (mine) groups.push({ scope: mine, key: mine.id, name: ctx.name || mine.name, hint: "this project", main: true });
-    const global = byId.get("global");
-    if (global && global !== mine) groups.push({ scope: global, key: "global", name: "Global", hint: "all projects", main: true });
-    for (const s of d.scopes.filter((s) => s.id !== "global" && s !== mine).sort((a, b) => a.name.localeCompare(b.name))) groups.push({ scope: s, key: s.id, name: s.name, main: false });
-
-    if (ctx && !mine && !searching) rows.push(hint(t, `No notes for ${ctx.name} yet`));
-
-    for (const g of groups) {
-      const notes = d.byScope.get(g.scope.id) ?? [];
-      const index = g.scope.index ?? { tokens: 0, over: 0 };
-      const tip = `${g.scope.key === "global" ? "Global notes: every project on this computer" : g.scope.key}\nIndex: ~${index.tokens} of ${g.scope.budget} tokens${index.over ? ` · ${index.over} over budget` : ""}`;
-      const scope = g.scope;
-      if (searching) {
-        const matches = notes.filter((n) => hit(hay(n)));
-        if (!matches.length) continue;
-        found += matches.length;
-        rows.push(this.groupRow(t, g.key, { ...g, count: matches.length, open: true, tip, onClick: null }));
-        for (const note of matches) add({ kind: "note", note, scope }, (i) => this.noteRow(t, note, i, cpl, snippet(note, terms)));
-        continue;
-      }
-      // Active notes in index order, then the ones turned off, then the archive.
-      const active = notes.filter((n) => n.reach !== "off" && n.reach !== "archived");
-      const off = notes.filter((n) => n.reach === "off");
-      const old = notes.filter((n) => n.reach === "archived");
-      const open = this.isOpen(g.key, g.main);
-      rows.push(this.groupRow(t, g.key, { ...g, count: active.length, open, tip, onClick: (cx) => this.toggle(g.key, g.main, cx) }));
-      if (!open) continue;
-      if (!notes.length) rows.push(hint(t, "No notes yet", 38));
-      for (const note of [...active, ...off]) add({ kind: "note", note, scope }, (i) => this.noteRow(t, note, i, cpl));
-      if (old.length) {
-        const key = `archive:${g.key}`;
-        const openOld = this.isOpen(key, false);
-        rows.push(this.archiveRow(t, key, old.length, openOld));
-        if (openOld) for (const note of old) add({ kind: "note", note, scope }, (i) => this.noteRow(t, note, i, cpl));
-      }
-    }
-    this.flat = flat;
-    // After a decision (or "review"): the cursor on the proposal now at that place.
-    if (this.want) {
-      const at = flat.map((x, i) => (x.kind === "review" || x.kind === "agents" ? i : -1)).filter((i) => i >= 0);
-      this.cursor = at.length ? at[Math.min(this.want.review, at.length - 1)] : -1;
-      this.want = null;
-    }
-    if (this.cursor >= flat.length) this.cursor = flat.length - 1;
-    if (searching && !found) rows.push(hint(t, "Nothing found"));
-    if (!searching && groups.length) rows.push(this.legend(t));
-    return body.children(rows);
+    if (this.viewH > 0) this.follow = false;
+    // Rows passing under a still pointer aren't hovered: no ✓ ✕ flickering by, no draw for each.
+    return scrollList(this, t, built.items, this.scroll, { followAt, onScroll: () => {
+      this.scrolledAt = Date.now();
+      this.hovered = null;
+    } });
   }
 
-  groupRow(t, key, { name, hint, count, open, tip, main, color, extra, onClick }) {
+  // ── a page ──────────────────────────────────────────────────────────────
+
+  pageTitle(t, card) {
+    const f = this.form;
+    const text = (s, color) => div().min_w(0).truncate().text_size(12.5).font_semibold().text_color(color ?? t.foreground).child(s);
+    if (f) {
+      const name = { edit: "Edit the note", review: "Edit, then accept", new: "New note", remember: "Remember", comment: "Comment for the dream", reason: f.items?.length > 1 ? `Reject ${f.items.length}` : "Reject", charter: "What it's for" }[f.kind];
+      return [text(name)];
+    }
+    switch (card?.kind) {
+      case "note":
+        return [scopeAvatar(t, card.scope, 16), text(card.scope?.name ?? card.note.scopeName ?? "", t.muted)];
+      case "review":
+      case "agents": {
+        const all = this.proposals();
+        const at = all.findIndex((p) => (p.kind === "review" ? card.kind === "review" && p.item.key === card.item.key : card.kind === "agents" && p.proposal.id === card.proposal.id));
+        return [leadIcon(t, "review", t.accent), text("Review", t.accent), div().flex_none().font_family(mono()).text_size(10.5).text_color(t.dim).child(at >= 0 ? `${at + 1} of ${all.length}` : "")];
+      }
+      case "inbox":
+        return [leadIcon(t, "inbox", t.working), text("Inbox")];
+      case "skill":
+        return [div().flex_none().text_color(t.ansi6).font_semibold().child("§"), text("Skill")];
+      case "scope":
+        return [scopeAvatar(t, card.scope, 16), text(card.scope.name)];
+      case "comments":
+        return [leadIcon(t, "comment"), text("Comments for the dream")];
+      case "decided":
+        return [leadIcon(t, "history"), text("Decided lately")];
+      case "about":
+        return [leadIcon(t, "moon"), text("The dreams behind them")];
+      default:
+        return [];
+    }
+  }
+
+  pageHeader(t, card) {
+    const proposal = !this.form && (card?.kind === "review" || card?.kind === "agents");
+    const id = !this.form && card?.kind === "note" ? card.note.id : null;
     return h_flex()
-      .id(`g-${key}`)
-      .h(28)
+      .h(42)
       .flex_none()
       .pl(8)
-      .pr(10)
-      .gap(6)
+      .pr(8)
+      .gap(8)
       .items_center()
-      .rounded(7)
-      .when(Boolean(onClick), (el) => el.cursor_pointer().hover((s) => s.bg(t.hover)).on_click((_e, cx) => onClick(cx)))
-      .when(Boolean(tip), (el) => el.tooltip(tip))
-      .child(svg(icon(open ? "chevron-down" : "chevron-right")).size(12).flex_none().text_color(t.dim))
-      .child(div().min_w(0).truncate().font_semibold().text_color(color ?? (main ? t.foreground : t.muted)).child(name))
-      .when(Boolean(hint), (el) => el.child(div().min_w(0).truncate().text_size(11).text_color(t.dim).child(hint)))
-      .child(div().flex_1())
-      .children(extra ?? [])
-      .child(div().flex_none().text_size(11).text_color(t.dim).child(String(count)));
-  }
-
-  // The Review group's heading: what to decide, "Accept all", the web UI.
-  reviewHead(t, review, shown, total, open, searching) {
-    const sure = Boolean(this.sure) && Date.now() - this.sure <= CONFIRM_MS;
-    const notes = review.items.length;
-    const small = (id, label, tip, color, onClick) => div()
-      .id(id)
-      .h(20)
-      .flex_none()
-      .px(7)
-      .flex()
-      .items_center()
-      .rounded(5)
-      .border_1()
-      .border_color(color ?? t.border)
-      .text_size(11)
-      .text_color(color ?? t.muted)
-      .cursor_pointer()
-      .when(Boolean(this.busy), (el) => el.opacity(0.45))
-      .hover((s) => s.bg(t.raised).text_color(color ?? t.foreground))
-      .tooltip(tip)
-      .on_click((_e, cx) => {
-        cx.stop_propagation();
-        onClick(cx);
-      })
-      .child(label);
-    const extra = [];
-    if (!searching && notes > 0) {
-      extra.push(sure
-        ? small("rv-all", this.busy ? "Accepting…" : `Accept ${notes}?`, `Click again to accept the ${notes} notes and skills shown here`, t.accent, (cx) => this.acceptAll(cx))
-        : small("rv-all", "Accept all", `Accept every note and skill left (${notes}): asks once more. AGENTS.md proposals are applied one by one.`, null, (cx) => this.acceptAll(cx)));
-    }
-    if (!searching) extra.push(iconButton(t, "rv-web", "external", "Open what dreams propose in the browser (comments, the dreams' reports)", (_e, cx) => cx.open_url(`${this.server}/#/review`), 22));
-    return this.groupRow(t, "review", {
-      name: "Review",
-      hint: this.width > 330 && !sure ? "to decide" : "",
-      count: searching ? shown : total,
-      open,
-      color: t.accent,
-      extra,
-      tip: `${this.toDecide()} to decide${countsLine(review) ? `: ${countsLine(review)}` : ""}\nWhat dreams propose: nothing is memory until you accept it.${review.waitingComments ? `\n${review.waitingComments} comment${review.waitingComments === 1 ? "" : "s"} wait for the next dream.` : ""}`,
-      onClick: searching ? null : (cx) => this.toggle("review", true, cx),
-    });
-  }
-
-  archiveRow(t, key, count, open) {
-    return h_flex()
-      .id(`g-${key}`)
-      .h(26)
-      .flex_none()
-      .pl(26)
-      .pr(10)
-      .gap(6)
-      .items_center()
-      .rounded(7)
-      .cursor_pointer()
-      .text_size(12)
-      .text_color(t.dim)
-      .hover((s) => s.bg(t.hover))
-      .tooltip("Replaced or deprecated notes: kept for history, pi no longer uses them")
-      .on_click((_e, cx) => this.toggle(key, false, cx))
-      .child(svg(icon(open ? "chevron-down" : "chevron-right")).size(11).flex_none())
-      .child(div().child("Archived"))
-      .child(div().flex_1())
-      .child(div().text_size(11).child(String(count)));
-  }
-
-  row(t, id, i, el) {
-    const on = i === this.cursor;
-    return h_flex()
-      .id(id)
-      .w_full()
-      .flex_none()
-      .py(5)
-      .pl(26)
-      .pr(10)
-      .gap(6)
-      .items_start()
-      .rounded(7)
-      .cursor_pointer()
-      .when(on, (e) => e.bg(t.selected))
-      .hover((s) => s.bg(on ? t.selected : t.hover))
-      .on_click((_e, cx) => {
-        this.cursor = i;
-        this.openAt(i, cx);
-      })
-      .children(el);
-  }
-
-  noteRow(t, n, i, cpl, found = null) {
-    const how = n.reach;
-    const quiet = how === "archived" || how === "off";
-    const title = div()
-      .max_h(36)
-      .overflow_hidden()
-      .line_height("18px")
-      .text_color(quiet ? t.dim : t.foreground)
-      .when(how === "archived", (el) => el.line_through())
-      .child(twoLines(n.title || n.id, how === "off" ? Math.max(14, cpl - 4) : cpl));
-    return this.row(t, `n-${n.id}`, i, [
-      mark(t, how, `m-${n.id}`),
-      v_flex()
-        .flex_1()
-        .min_w(0)
-        .child(title)
-        .when(Boolean(found), (el) => el.child(div().truncate().text_size(11.5).line_height("17px").text_color(t.dim).child(found))),
-      ...(how === "off" ? [div().id(`off-${n.id}`).h(18).flex_none().flex().items_center().text_size(10.5).text_color(t.dim).tooltip("Turned off: pi no longer gets it").child("off")] : []),
-    ]);
-  }
-
-  inboxRow(t, item, i, cpl) {
-    return this.row(t, `i-${item.id}`, i, [
-      div()
-        .id(`im-${item.id}`)
-        .w(12)
-        .h(18)
+      .border_b(1)
+      .border_color(t.border)
+      .child(backButton(t, this.form ? "Cancel (Esc)" : "Back (Esc)", (_e, cx) => (this.form ? this.closeForm(cx) : this.back(cx))))
+      .child(h_flex().flex_1().min_w(0).gap(7).items_center().children(this.pageTitle(t, card)))
+      .when(proposal, (el) => el
+        .child(iconButton(t, "mem-prev", "chevron-up", "The previous proposal (↑)", (_e, cx) => this.step(-1, cx), 24))
+        .child(iconButton(t, "mem-next", "chevron-down", "The next proposal (↓)", (_e, cx) => this.step(1, cx), 24)))
+      .when(Boolean(id), (el) => el.child(div()
+        .id("mem-id")
         .flex_none()
-        .flex()
-        .items_center()
-        .justify_center()
-        .text_size(13)
-        .text_color(t.working)
-        .tooltip(item.source === "user" ? "From you (/remember)" : "From an agent (memory_inbox)")
-        .child("+"),
-      div().flex_1().min_w(0).max_h(36).overflow_hidden().line_height("18px").child(twoLines(item.text, cpl)),
-    ]);
+        .px(4)
+        .rounded(4)
+        .cursor_pointer()
+        .font_family(mono())
+        .text_size(10.5)
+        .text_color(this.copied === id ? t.ansi2 : t.dim)
+        .hover((s) => s.bg(t.hover).text_color(t.foreground))
+        .tooltip(`Copy ${id}: pi opens it with memory_read`)
+        .on_click((_e, cx) => this.copy(id, cx))
+        .child(this.copied === id ? "copied" : id)));
   }
 
-  legend(t) {
-    const item = (how, text) => h_flex().gap(5).items_center().child(mark(t, how, `legend-${how}`)).child(div().child(text));
-    return h_flex()
-      .flex_wrap()
-      .pl(14)
-      .pr(10)
-      .pt(10)
-      .pb(4)
-      .gap_x(12)
-      .gap_y(2)
-      .text_size(11)
-      .text_color(t.dim)
-      .child(item("always", "always in context"))
-      .child(item("pointer", "when relevant"))
-      .child(item("none", "search only"));
-  }
-
-  // ── a card ──────────────────────────────────────────────────────────────
-
-  // The card's two parts: what scrolls, and its actions at the bottom edge.
-  card(t, card) {
-    const id = `card-${this.view?.kind ?? "gone"}-${this.view?.id ?? ""}${this.form ? "-form" : ""}`;
-    const scroll = (children) => v_flex().id(`${id}-box`).flex_1().min_h(0).child(v_flex().id(id).size_full().overflow_y_scrollbar().px(16).pt(14).pb(18).gap(12).children(children));
-    if (card.kind === "gone") return [scroll([div().text_color(t.dim).child(this.view?.kind === "review" || this.view?.kind === "agents" ? "This proposal no longer waits for a decision." : "This is no longer in memory.")])];
-    const { body, actions } =
-      card.kind === "note" ? noteCard(this, t, card)
-      : card.kind === "inbox" ? inboxCard(this, t, card.item)
-      : card.kind === "review" ? reviewCard(this, t, card)
-      : agentsCard(this, t, card);
-    const out = [scroll(body)];
-    if (actions?.length) out.push(h_flex().id(`${id}-actions`).flex_none().flex_wrap().px(12).py(8).gap(6).items_center().border_t(1).border_color(t.border).children(actions));
-    return out;
+  // The page's two parts: what scrolls, and its actions at the bottom edge.
+  page(t, card) {
+    const key = this.form ? `form-${this.form.kind}` : `page-${this.view?.kind ?? ""}-${this.view?.id ?? this.view?.name ?? ""}`;
+    const scroll = (children) => v_flex().id(`${key}-box`).flex_1().min_h(0).child(v_flex().id(key).size_full().overflow_y_scrollbar().px(14).pt(12).pb(18).gap(12).children(children));
+    let out;
+    if (this.form) out = ["remember", "comment", "reason", "charter"].includes(this.form.kind) ? textForm(this, t) : noteForm(this, t);
+    else if (card.kind === "gone") return [scroll([div().text_color(t.dim).child(this.view?.kind === "review" || this.view?.kind === "agents" ? "This proposal no longer waits for a decision." : "This is no longer in memory.")])];
+    else {
+      const r = this.data?.review;
+      out =
+        card.kind === "note" ? noteCard(this, t, card)
+        : card.kind === "inbox" ? inboxCard(this, t, card.item)
+        : card.kind === "review" ? reviewCard(this, t, card)
+        : card.kind === "agents" ? agentsCard(this, t, card)
+        : card.kind === "skill" ? skillCard(this, t, card.skill)
+        : card.kind === "scope" ? scopeCard(this, t, card.scope)
+        : card.kind === "comments" ? commentsView(this, t, r)
+        : card.kind === "decided" ? decidedView(this, t, r)
+        : aboutView(this, t, r);
+    }
+    const parts = [scroll(out.body)];
+    const actions = [...(out.actions ?? [])];
+    if (out.menu) actions.push(div().flex_1(), iconButton(t, "mem-page-more", "more", "More (.)", (_e, cx) => this.menu(out.menu, cx), 28));
+    if (actions.length) parts.push(h_flex().id(`${key}-actions`).flex_none().flex_wrap().px(10).py(8).gap(6).items_center().border_t(1).border_color(t.border).children(actions));
+    return parts;
   }
 
   // ── the dream, at the bottom ────────────────────────────────────────────
 
   footer(t) {
     const d = this.data, s = this.status;
-    const bar = h_flex().h(30).flex_none().pl(12).pr(8).gap(12).items_center().border_t(1).border_color(t.border).text_size(11.5).text_color(t.dim);
-    const web = iconButton(t, "f-web", "external", `Open wierd-memory in the browser (${this.server})`, (_e, cx) => cx.open_url(`${this.server}/`), 22);
-    if (this.down) return bar.child(div().child("Looking for the server…")).child(div().flex_1());
-    if (!d || !s) return bar.child(div().child(this.loading || this.down === null ? "Reading memory…" : "")).child(div().flex_1()).child(web);
+    const bar = h_flex().h(34).flex_none().px(6).gap(2).items_center().border_t(1).border_color(t.border).text_size(11.5).text_color(t.dim);
+    const web = iconButton(t, "f-web", "external", `Open wierd-memory in the browser (${this.server})`, (_e, cx) => cx.open_url(`${this.server}/`), 24);
+    if (this.down) return bar.child(div().px(6).child("Looking for the server…")).child(div().flex_1());
+    if (!d || !s) return bar.child(div().px(6).child(this.loading || this.down === null ? "Reading memory…" : "")).child(div().flex_1()).child(web);
     const dream = s.dream ?? {};
     const last = dream.last;
+    // A footer item: a row like the sidebar's footer has (Settings), lit under the pointer.
     const item = (id, name, text, tip, color, onClick) => h_flex()
       .id(id)
-      .gap(5)
+      .h(26)
+      .px(7)
+      .gap(6)
       .items_center()
       .flex_none()
+      .rounded(7)
       .when(Boolean(color), (el) => el.text_color(color))
       .when(Boolean(tip), (el) => el.tooltip(tip))
-      .when(Boolean(onClick), (el) => el.cursor_pointer().hover((s) => s.text_color(t.foreground)).on_click((_e, cx) => onClick(cx)))
+      .when(Boolean(onClick), (el) => el.cursor_pointer().hover((st) => st.bg(t.hover).text_color(color ?? t.foreground)).on_click((_e, cx) => onClick(cx)))
       .child(name === "spinner" ? svg(icon("spinner")).size(12).text_color(t.working).spin(900) : svg(icon(name)).size(12))
       .child(div().child(text));
 
     const due = dream.due ?? {};
-    const waiting = [due.sessions ? `${due.sessions} new session${due.sessions === 1 ? "" : "s"}` : "", due.inbox ? `${due.inbox} in the inbox` : ""].filter(Boolean).join(", ");
-    const next = `\n${dream.scheduled ? (due.due ? "The next dream is due" : `The next dream: not yet${due.reason ? ` (${due.reason})` : ""}`) : "Scheduled dreams are off"}${waiting ? `\nWaiting for it: ${waiting}` : ""}`;
+    const waiting = [due.sessions ? plural(due.sessions, "new session") : "", due.inbox ? `${due.inbox} in the inbox` : ""].filter(Boolean).join(", ");
+    const next = `\n${dream.scheduled ? (due.due ? "The next dream is due" : `The next dream: not yet${due.reason ? ` (${due.reason})` : ""}`) : "Scheduled dreams are off"}${waiting ? `\nWaiting for it: ${waiting}` : ""}\nClick: dream now, the schedule, sync`;
+    const menu = (cx) => this.menu({ kind: "dream" }, cx);
     let status;
     if (dream.running) {
       const r = dream.running;
-      status = item("f-dream", "spinner", `Dreaming${running(r.startedAt)}`, `A dream is running (${r.id}), started ${stamp(r.startedAt)}`, t.working);
+      status = item("f-dream", "spinner", `Dreaming${running(r.startedAt)}`, `A dream is running (${r.id}), started ${stamp(r.startedAt)}\nClick: stop it`, t.working, menu);
     } else if (!last) {
-      status = item("f-dream", "moon", "No dreams yet", next.trim());
+      status = item("f-dream", "moon", "No dreams yet", next.trim(), null, menu);
     } else {
       const at = Date.parse(last.finishedAt ?? last.startedAt);
-      const facts = [`Last dream ${stamp(last.finishedAt ?? last.startedAt)}`, last.sessions ? `${last.sessions} sessions` : "", last.cost ? `$${last.cost.toFixed(2)}` : "", last.status === "noop" ? "nothing new" : last.status === "cancelled" ? "cancelled" : "", last.id].filter(Boolean).join(" · ");
+      const facts = [`Last dream ${stamp(last.finishedAt ?? last.startedAt)}`, last.sessions ? plural(last.sessions, "session") : "", last.cost ? `$${last.cost.toFixed(2)}` : "", last.status === "noop" ? "nothing new" : last.status === "cancelled" ? "cancelled" : "", last.id].filter(Boolean).join(" · ");
       status = last.status === "error"
-        ? item("f-dream", "alert", `Dream failed ${ago(at)}`, `${facts}\n${last.error ?? ""}${next}`, t.blocked)
-        : item("f-dream", "moon", `Dreamt ${ago(at)}`, `${facts}${next}`);
+        ? item("f-dream", "alert", `Dream failed ${ago(at)}`, `${facts}\n${last.error ?? ""}${next}`, t.blocked, menu)
+        : item("f-dream", "moon", `Dreamt ${ago(at)}`, `${facts}${next}`, null, menu);
     }
-    const todo = this.toDecide();
+    const todo = this.proposals().length;
     const counts = d.review ? countsLine(d.review) : "";
-    const inbox = d.inbox.length;
     return bar
       .child(status)
-      .when(todo > 0, (el) => el.child(item("f-review", "review", `${todo} to decide`, `What dreams propose${counts ? `: ${counts}` : ""}\nClick to go through them`, t.accent, (cx) => {
+      .when(todo > 0 && !(this.view === null && !this.form && this.isOpen("review", true) && (this.scroll.offset ?? 0) < 40), (el) => el.child(item("f-review", "review", `${todo} to decide`, `What dreams propose${counts ? `: ${counts}` : ""}\nClick to go through them`, t.accent, (cx) => {
         this.goReview();
         this.handle.focus();
         cx.notify();
-      })))
-      .when(inbox > 0, (el) => el.child(item("f-inbox", "inbox", String(inbox), `${inbox} kept for the next dream`, null, (cx) => {
-        this.open.inbox = true;
-        localStorage.setItem("open", JSON.stringify(this.open));
-        this.back(cx);
       })))
       .child(div().flex_1())
       .child(web);
