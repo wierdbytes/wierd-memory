@@ -96,15 +96,20 @@ async function compute(cwd: string): Promise<ProjectInfo> {
 	return { key: norm ?? `local:${root}`, root, checkout, remote, git: true, exists: true, project: true };
 }
 
-const cache = new Map<string, Promise<ProjectInfo>>();
+/**
+ * How long an answer is trusted. A folder's key changes when its repository
+ * gets (or loses) a remote, and the server runs for weeks: it must notice.
+ */
+const PROJECT_TTL_MS = 60_000;
+const cache = new Map<string, { at: number; info: Promise<ProjectInfo> }>();
 
-export function resolveProject(cwd: string): Promise<ProjectInfo> {
-	let hit = cache.get(cwd);
-	if (!hit) {
-		hit = compute(cwd);
-		cache.set(cwd, hit);
-	}
-	return hit;
+/** `maxAgeMs`: how old a cached answer may be (0: ask git now). */
+export function resolveProject(cwd: string, maxAgeMs = PROJECT_TTL_MS): Promise<ProjectInfo> {
+	const hit = cache.get(cwd);
+	if (hit && Date.now() - hit.at < maxAgeMs) return hit.info;
+	const info = compute(cwd);
+	cache.set(cwd, { at: Date.now(), info });
+	return info;
 }
 
 /** Short human label for a key: `github.com/o/r` → `o/r`, `local:/a/b/c` → `c`. */

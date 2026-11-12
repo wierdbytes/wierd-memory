@@ -115,7 +115,10 @@ export class Searcher {
 		if (scope !== "notes") {
 			const root = this.app.paths.digests;
 			const here = proj ? keyToDir(proj.key) : undefined;
-			const dirs = projects === "all" || !here ? (existsSync(root) ? readdirSync(root, { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => d.name) : []) : [here];
+			// A folder that got a git remote: its sessions stay filed under its old `local:` key until the next dream refiles them.
+			const before = proj?.git && !proj.key.startsWith("local:") ? keyToDir(`local:${proj.root}`) : undefined;
+			const isHere = (dir: string) => dir === here || dir === before;
+			const dirs = projects === "all" || !here ? (existsSync(root) ? readdirSync(root, { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => d.name) : []) : [here, ...(before && existsSync(join(root, before)) ? [before] : [])];
 			let bm: Bm25<DigestMeta> | undefined;
 			if (dirs.length === 1) bm = this.digestBm(dirs[0]);
 			else {
@@ -128,9 +131,9 @@ export class Searcher {
 			for (const h of hits) {
 				const ref = `s:${h.doc.meta.sessionId}#${h.doc.meta.entryId ?? ""}`;
 				const snip = snippet(h.doc.text, o.query, 400);
-				const isHere = h.doc.meta.dir === here;
-				result.sessions.push({ ref, sessionId: h.doc.meta.sessionId, entryId: h.doc.meta.entryId, project: h.doc.meta.dir, here: isHere, snippet: snip, score: h.score });
-				out.push(`- ${ref} (${isHere ? "this project" : h.doc.meta.dir})\n  ${snip.replace(/\n/g, "\n  ")}`);
+				const mine = isHere(h.doc.meta.dir);
+				result.sessions.push({ ref, sessionId: h.doc.meta.sessionId, entryId: h.doc.meta.entryId, project: h.doc.meta.dir, here: mine, snippet: snip, score: h.score });
+				out.push(`- ${ref} (${mine ? "this project" : h.doc.meta.dir})\n  ${snip.replace(/\n/g, "\n  ")}`);
 			}
 		}
 		out.push("Open a note or a session reference with memory_read.");

@@ -16,7 +16,7 @@
  *    branch, where they wait for the user — nothing becomes memory here
  */
 
-import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, rmdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
 	type AgentsEdit,
@@ -56,6 +56,7 @@ import {
 	parseOps,
 	parseSession,
 	pendingSessions,
+	type ProjectInfo,
 	ProjectMap,
 	projectScope,
 	renderDigest,
@@ -184,8 +185,36 @@ export async function updateDigests(files: SessionFile[], P: HomePaths, log: (m:
 		if (rec.dir) rmSync(digestFile(P, rec), { force: true });
 		delete idx[k];
 	}
-	const stale = files.filter((f) => idx[f.path]?.size !== f.size || idx[f.path]?.v !== DIGEST_VERSION);
+	// Each folder is asked once per refresh, now: a folder that got a git remote since has another key.
+	const asked = new Map<string, Promise<ProjectInfo>>();
+	const ask = (dir: string) => {
+		let p = asked.get(dir);
+		if (!p) asked.set(dir, (p = resolveProject(dir, 0)));
+		return p;
+	};
+	// A folder that is gone says nothing about its project: then the root the session was filed under speaks for it.
+	const projectOf = async (cwd: string, root?: string) => {
+		const p = await ask(cwd);
+		if (p.exists || !root || root === cwd) return p;
+		const r = await ask(root);
+		return r.exists ? r : p;
+	};
+	// A digest filed under a key its folder no longer has is rebuilt under the current one.
+	const rekeyed = new Set<string>();
+	await pool(
+		files.filter((f) => idx[f.path]?.cwd && idx[f.path]?.dir),
+		8,
+		async (f) => {
+			const rec = idx[f.path];
+			const proj = await projectOf(rec.cwd, rec.root);
+			if (proj.exists && proj.key !== rec.projectKey) rekeyed.add(f.path);
+		},
+	);
+	if (rekeyed.size) log(`digests: ${rekeyed.size} session(s) belong to another project key now`);
+	const stale = files.filter((f) => idx[f.path]?.size !== f.size || idx[f.path]?.v !== DIGEST_VERSION || rekeyed.has(f.path));
 	if (stale.length) log(`digests: rebuilding ${stale.length} of ${files.length} sessions`);
+	/** Folders a digest moved out of: one left empty goes (search lists them as projects). */
+	const left = new Set<string>();
 	let n = 0;
 	for (const f of stale) {
 		if (signal.aborted) break;
@@ -195,11 +224,14 @@ export async function updateDigests(files: SessionFile[], P: HomePaths, log: (m:
 				idx[f.path] = { v: DIGEST_VERSION, size: f.size, mtimeMs: f.mtimeMs, sessionId: sessionIdFromPath(f.path), projectKey: "", dir: "", cwd: "", started: "", userMessages: 0, toolCalls: 0, error: "no header" };
 				continue;
 			}
-			const proj = await resolveProject(s.header.cwd);
+			const prev = idx[f.path];
+			const proj = await projectOf(s.header.cwd, prev?.cwd === s.header.cwd ? prev.root : undefined);
 			const d = buildDigest(s);
 			const dir = keyToDir(proj.key);
-			const prev = idx[f.path];
-			if (prev?.dir && prev.dir !== dir) rmSync(digestFile(P, prev), { force: true });
+			if (prev?.dir && prev.dir !== dir) {
+				rmSync(digestFile(P, prev), { force: true });
+				left.add(prev.dir);
+			}
 			const rec: DigestRecord = {
 				v: DIGEST_VERSION,
 				size: f.size,
@@ -228,6 +260,13 @@ export async function updateDigests(files: SessionFile[], P: HomePaths, log: (m:
 		}
 	}
 	saveJson(P.digestIndex, idx);
+	for (const dir of left) {
+		try {
+			rmdirSync(join(P.digests, dir));
+		} catch {
+			// not empty: other sessions are still filed there
+		}
+	}
 	return idx;
 }
 
@@ -728,7 +767,8 @@ export async function dream(runId: string, deps: DreamDeps): Promise<DreamOutcom
 					const cached = JSON.parse(readFileSync(cachePath, "utf-8")) as Card;
 					if (cached.size === f.size) {
 						mark(true);
-						return cached;
+						// The session's project is what its digest says now (the folder may have got a git remote since).
+						return { ...cached, projectKey: rec.projectKey };
 					}
 				}
 				if (signal.aborted) throw new Error("dream aborted (time limit)");
