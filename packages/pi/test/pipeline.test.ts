@@ -7,9 +7,10 @@ import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { DreamSubmit, Stage, StageModel, StageUsage } from "@wierd-memory/core";
+import { execFileSync } from "node:child_process";
+import { type DreamSubmit, keyToDir, projectScope, type Stage, type StageModel, type StageUsage } from "@wierd-memory/core";
 import { App } from "../../server/src/app.ts";
-import { type DreamApi, dream, type DreamLlm, parseRunArgs } from "../pipeline.ts";
+import { type DreamApi, dream, type DreamLlm, loadDigestIndex, parseRunArgs } from "../pipeline.ts";
 
 let app: App;
 let home: string;
@@ -236,6 +237,39 @@ describe("a dream", () => {
 		expect((await app.reviews.view()).pending).toBe(0);
 		const report = (await app.state.run(id))?.report;
 		expect(report?.rejected.some((r) => r.reason.includes("turned off"))).toBe(true);
+	});
+
+	it("refiles a folder's sessions and memory when it gets a git remote", async () => {
+		const key = "github.com/o/proj";
+		const dir = keyToDir(key);
+		const oldDir = keyToDir(`local:${proj}`);
+		const moved = (await app.mem.notes()).filter((n) => n.scope === scope()).map((n) => n.id);
+		expect(moved.length).toBe(2);
+		expect(existsSync(join(home, "memory", ".local", "digests", oldDir))).toBe(true);
+		execFileSync("git", ["init", "-q"], { cwd: proj });
+		execFileSync("git", ["remote", "add", "origin", "git@github.com:o/proj.git"], { cwd: proj });
+		await run(new Script(), "reindex");
+		// The digests are rebuilt under the new key (their records too), the old folder is gone.
+		const index = loadDigestIndex(join(home, "memory", ".local", "digests", "index.json"));
+		expect(Object.values(index).map((r) => [r.projectKey, r.dir])).toEqual([[key, dir], [key, dir], [key, dir]]);
+		expect(existsSync(join(home, "memory", ".local", "digests", dir, `${S1}.txt`))).toBe(true);
+		expect(existsSync(join(home, "memory", ".local", "digests", oldDir))).toBe(false);
+		expect(readFileSync(join(home, "memory", ".local", "digests", dir, `${S1}.txt`), "utf-8")).toContain(`project ${key}`);
+		// The scope moved before the dream started.
+		expect((await app.mem.notes()).filter((n) => n.scope === projectScope(key)).map((n) => n.id)).toEqual(moved);
+		expect((await app.mem.scopes()).some((s) => s.id === scope())).toBe(false);
+		// "This project" in search is the new key's.
+		const found = await app.searcher.search({ query: "линтер", scope: "sessions", cwd: proj });
+		expect(found.sessions.map((s) => [s.sessionId, s.here])).toContainEqual([S1, true]);
+		// The next dream files a new session's learnings under the new key, next to the moved notes.
+		session(join(home, "sessions", "--proj--"), "01a1b2c3-0000-7000-8000-0000000000a4", proj, [["dddd0001", "user", "Всегда пиши changelog"]]);
+		const llm = new Script();
+		await run(llm);
+		const curator = JSON.parse(llm.calls.find((c) => c.stage === "analyze")?.user ?? "{}");
+		expect(curator.project.key).toBe(key);
+		expect(curator.notes.project.map((n: { id: string }) => n.id).sort()).toEqual([...moved].sort());
+		const v = await app.reviews.view();
+		expect(v.items.map((i) => `${i.kind}:${i.scope}:${i.note.title}`)).toEqual([`added:${projectScope(key)}:Всегда пиши changelog`]);
 	});
 
 	it("parses the runner's arguments", () => {

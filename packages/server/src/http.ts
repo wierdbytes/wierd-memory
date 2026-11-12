@@ -171,11 +171,18 @@ route("POST", "/api/evidence", async ({ app, body }) => {
 
 async function inboxView(app: App, status: "pending" | "done" | "dismissed" | "all") {
 	const items = await app.state.inbox(status);
-	return items.map((i) => ({
-		...i,
-		scopeId: i.scope === "global" ? GLOBAL_SCOPE : i.projectKey ? projectScope(i.projectKey) : null,
-		projectName: i.projectKey ? scopeShortName(i.projectKey) : null,
-	}));
+	return Promise.all(
+		items.map(async (i) => {
+			// The key its folder has now: one that got a git remote since files the item under the remote's project.
+			const projectKey = await app.currentKey(i.cwd, i.projectKey);
+			return {
+				...i,
+				projectKey,
+				scopeId: i.scope === "global" ? GLOBAL_SCOPE : projectKey ? projectScope(projectKey) : null,
+				projectName: projectKey ? scopeShortName(projectKey) : null,
+			};
+		}),
+	);
 }
 
 route("GET", "/api/inbox", ({ app, q }) => {

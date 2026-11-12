@@ -19,7 +19,7 @@
  * scope allows, so git sees one file changing rather than two unrelated ones.
  */
 
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import {
 	cloneNote,
@@ -47,6 +47,15 @@ export interface ScopeRow extends ScopeMeta {
 }
 
 export type SkillRow = SkillDraft;
+
+/** What `moveScope` did. */
+export interface MoveReport {
+	notes: number;
+	/** Files that got another name in the new scope (it had one of that name): [from, to]. */
+	renamed: Array<[string, string]>;
+	charter: boolean;
+	skills: string[];
+}
 
 interface Tree {
 	notes: Note[];
@@ -347,6 +356,86 @@ export class MemoryStore {
 		if (existsSync(file) && next.key === meta.key && next.root === meta.root) return;
 		writeFileSync(file, `${JSON.stringify(next, null, 2)}\n`, "utf-8");
 		this.invalidate(ref);
+	}
+
+	/**
+	 * Move everything of scope `from` into `to`, file by file and byte for byte
+	 * (a mechanical move, nobody's edit): every note keeps its id, evidence and
+	 * file name — only a name taken in `to` (here, or on `like` by another note)
+	 * gets a suffix; on `like` a note's path in `to` is taken when free, so both
+	 * branches keep one path per note. The charter comes along when `to` has
+	 * none. A skill whose name `to` has already: dropped when equal, else it
+	 * replaces that one (`replaceSkills`, for a branch whose version is a
+	 * proposal) or gets a suffix. `to` gets a scope.json saying `meta` (what
+	 * one there says stays), and the folder of `from` goes away.
+	 */
+	async moveScope(ref: string, from: string, to: string, meta: { key?: string; root?: string }, opts: { like?: string; replaceSkills?: boolean } = {}): Promise<MoveReport> {
+		const out: MoveReport = { notes: 0, renamed: [], charter: false, skills: [] };
+		if (from === to || from === GLOBAL_SCOPE || !from.startsWith("projects/")) return out;
+		const t = this.tree(ref);
+		const other = opts.like ? this.tree(opts.like) : undefined;
+		const root = this.repo.wt(ref);
+		const fromDir = join(root, "scopes", from);
+		if (!existsSync(fromDir)) return out;
+		const toDir = join(root, "scopes", to);
+		const dir = `scopes/${to}/notes`;
+		const taken = new Set(t.files);
+		for (const n of t.notes) {
+			if (n.scope !== from) continue;
+			const cur = t.paths.get(n.id);
+			if (!cur) continue;
+			const hint = other?.paths.get(n.id);
+			const elsewhere = (p: string) => !!other && other.files.has(p) && other.paths.get(n.id) !== p;
+			let target: string;
+			if (hint && dirname(hint) === dir && !taken.has(hint)) target = hint;
+			else {
+				const base = basename(cur, ".md");
+				target = `${dir}/${base}.md`;
+				for (let i = 2; taken.has(target) || elsewhere(target); i++) target = `${dir}/${base}-${i}.md`;
+				if (basename(target) !== basename(cur)) out.renamed.push([cur, target]);
+			}
+			mkdirSync(join(root, dir), { recursive: true });
+			renameSync(join(root, cur), join(root, target));
+			taken.delete(cur);
+			taken.add(target);
+			out.notes++;
+		}
+		const charter = join(fromDir, "charter.md");
+		if (existsSync(charter) && !existsSync(join(toDir, "charter.md"))) {
+			mkdirSync(toDir, { recursive: true });
+			renameSync(charter, join(toDir, "charter.md"));
+			out.charter = true;
+		}
+		// Skills by their folders (a skill's name in its front matter may say otherwise).
+		const skill = (base: string, name: string) => {
+			const text = readText(join(base, "skills", name, "SKILL.md"));
+			return text === undefined ? undefined : parseSkill(text, to, name);
+		};
+		for (const name of dirs(join(fromDir, "skills"))) {
+			const s = skill(fromDir, name);
+			if (!s) continue;
+			const there = skill(toDir, name);
+			if (there && there.description === s.description && there.body.trim() === s.body.trim()) continue;
+			if (!there || opts.replaceSkills) {
+				rmSync(join(toDir, "skills", name), { recursive: true, force: true });
+				mkdirSync(join(toDir, "skills"), { recursive: true });
+				renameSync(join(fromDir, "skills", name), join(toDir, "skills", name));
+				out.skills.push(name);
+				continue;
+			}
+			// Two different skills of one name: the one in `to` stays, this one is kept beside it.
+			let next = `${name}-2`;
+			for (let i = 3; existsSync(join(toDir, "skills", next)); i++) next = `${name}-${i}`;
+			const file = join(toDir, "skills", next, "SKILL.md");
+			mkdirSync(dirname(file), { recursive: true });
+			writeFileSync(file, renderSkill({ ...s, name: next }), "utf-8");
+			out.skills.push(next);
+			out.renamed.push([`scopes/${from}/skills/${name}`, `scopes/${to}/skills/${next}`]);
+		}
+		rmSync(fromDir, { recursive: true, force: true });
+		this.invalidate(ref);
+		await this.ensureScope(ref, { ...meta, id: to });
+		return out;
 	}
 
 	async setCharter(ref: string, id: string, charter: string | null): Promise<void> {

@@ -13,6 +13,8 @@
  *   pulled with git is noticed.
  * - Every change to approved memory is followed by: the dreams branch
  *   brought in step, clients told (`rev`), a push to the remote.
+ * - A project's memory follows its key: a folder that got a git remote has
+ *   its `local:` scope moved to the remote's (`followRemotes`).
  *
  * Mutations run one at a time (`lock`).
  */
@@ -61,7 +63,7 @@ import {
 } from "@wierd-memory/core";
 import { Dreams } from "./dreams.ts";
 import { MAIN, Repo } from "./git.ts";
-import { MemoryStore, type ScopeRow } from "./memory.ts";
+import { MemoryStore, type MoveReport, type ScopeRow } from "./memory.ts";
 import { Reviews } from "./reviews.ts";
 import { Searcher } from "./searcher.ts";
 import { StateStore } from "./state.ts";
@@ -93,6 +95,21 @@ export function scopeShortName(key: string): string {
 	if (key === GLOBAL_SCOPE) return "Global";
 	if (key.startsWith("local:")) return basename(key.slice(6)) || key;
 	return key.split("/").pop() || key;
+}
+
+/** A project scope whose folder's key changed: `from` is moved into `to`. */
+export interface ScopeMove {
+	from: string;
+	fromKey: string;
+	to: string;
+	toKey: string;
+	root: string;
+}
+
+function moveDetails(m: ScopeMove, r: MoveReport): string {
+	const lines = [`${m.from} → ${m.to}`, `${r.notes} note${r.notes === 1 ? "" : "s"}${r.charter ? ", the charter" : ""}${r.skills.length ? `, skills: ${r.skills.join(", ")}` : ""}`];
+	for (const [a, b] of r.renamed) lines.push(`renamed (the name was taken): ${a} → ${b}`);
+	return lines.join("\n");
 }
 
 export interface AppOptions {
@@ -163,6 +180,8 @@ export class App {
 		// The dreams branch, checked out and as its last commit left it (made from the approved one the first time).
 		await app.repo.ensureBranch(app.reviewBranch, app.cfg.memory.remote);
 		await app.lock(async () => undefined); // takes in whatever was edited while the server was down
+		// A folder that got a git remote while the server was down: its memory moves to the new key now.
+		await app.followRemotes().catch((err) => app.log(`could not move the scopes of folders that got a git remote: ${err instanceof Error ? err.message : err}`));
 		await app.dreams.recover();
 		app.dreams.schedule();
 		if (app.background) {
@@ -319,6 +338,94 @@ export class App {
 		await this.reviews.sync();
 		this.bump("memory");
 		this.pushSoon();
+	}
+
+	// ── a project's memory follows its key ───────────────────────────────────
+
+	/** The key a folder has now (it changes when the folder gets a git remote); `stored` when the folder is gone. */
+	async currentKey(cwd: string | undefined, stored: string): Promise<string> {
+		if (!cwd) return stored;
+		const proj = await resolveProject(cwd);
+		return proj.exists ? proj.key : stored;
+	}
+
+	/**
+	 * Project scopes keyed `local:<root>` (on either branch) whose folder is now
+	 * a git repository with a remote: its memory belongs to the remote's key.
+	 */
+	private async scopesToFollow(): Promise<ScopeMove[]> {
+		const rows = new Map<string, ScopeRow>();
+		for (const ref of [MAIN, this.reviewBranch]) for (const row of await this.mem.scopes(ref)) if (!rows.has(row.id) || (!rows.get(row.id)?.key && row.key)) rows.set(row.id, row);
+		const out: ScopeMove[] = [];
+		for (const row of rows.values()) {
+			if (!row.id.startsWith("projects/")) continue;
+			const key = row.key ?? keyOfScope(row.id) ?? "";
+			if (!key.startsWith("local:")) continue;
+			const root = key.slice("local:".length);
+			if (!root || !existsSync(root)) continue;
+			const proj = await resolveProject(root, 0);
+			if (!proj.git || proj.key.startsWith("local:") || proj.key === key) continue;
+			const to = projectScope(proj.key);
+			if (to !== row.id) out.push({ from: row.id, fromKey: key, to, toKey: proj.key, root: proj.root });
+		}
+		return out;
+	}
+
+	private following: Promise<ScopeMove[]> | undefined;
+
+	/**
+	 * Move the memory of a folder that got a git remote from its `local:` scope
+	 * into the remote's (`scopesToFollow`), with nobody asked: the pi extension
+	 * already looks the folder up by its new key, and dreams file its sessions
+	 * under it. On the approved branch it is one commit per scope; the dreams
+	 * branch follows by the usual merge, and what is only proposed there in the
+	 * old scope is moved after it. Idempotent: nothing to move, nothing done.
+	 * Not to be called from inside `lock` (it takes it).
+	 */
+	followRemotes(): Promise<ScopeMove[]> {
+		// One at a time: a session start may ask while a dream's start does.
+		this.following ??= this.followNow().finally(() => {
+			this.following = undefined;
+		});
+		return this.following;
+	}
+
+	private async followNow(): Promise<ScopeMove[]> {
+		// Asking git about the folders is done before the lock: other mutations need not wait on it.
+		const moves = await this.scopesToFollow();
+		if (!moves.length) return [];
+		return this.lock(async () => {
+			const done: ScopeMove[] = [];
+			for (const m of moves) {
+				const meta = { key: m.toKey, root: m.root };
+				const why = `scope ${m.fromKey} → ${m.toKey}: the folder got a git remote`;
+				let moved = false;
+				if ((await this.mem.scopes(MAIN)).some((s) => s.id === m.from)) {
+					const r = await this.mem.moveScope(MAIN, m.from, m.to, meta, { like: this.reviewBranch });
+					const hash = await this.repo.commit(MAIN, `${why}\n\n${moveDetails(m, r)}`, SYSTEM_AUTHOR);
+					if (hash) {
+						this.log(`${why} (${r.notes} note${r.notes === 1 ? "" : "s"}, ${hash.slice(0, 8)})`);
+						// The dreams branch takes the move in like any change of approved memory: notes on both branches move there too.
+						await this.afterMainChange();
+						moved = true;
+					}
+				}
+				// What is left of the old scope on the dreams branch is only proposed there (new notes, a note moved
+				// into it, skills), or its folder's scope.json, which the merge leaves to a folder main does not have.
+				if ((await this.mem.scopes(this.reviewBranch)).some((s) => s.id === m.from)) {
+					const r = await this.mem.moveScope(this.reviewBranch, m.from, m.to, meta, { like: MAIN, replaceSkills: true });
+					const hash = await this.repo.commit(this.reviewBranch, `${why} (${this.reviewBranch})\n\n${moveDetails(m, r)}`, SYSTEM_AUTHOR);
+					if (hash) {
+						this.log(`${why}: ${r.notes} proposed note${r.notes === 1 ? "" : "s"} moved on ${this.reviewBranch} (${hash.slice(0, 8)})`);
+						this.bump("review");
+						this.pushSoon();
+						moved = true;
+					}
+				}
+				if (moved) done.push(m);
+			}
+			return done;
+		});
 	}
 
 	// ── the remote ───────────────────────────────────────────────────────
@@ -482,6 +589,11 @@ export class App {
 		const g = buildIndex(notes.filter((n) => n.scope === GLOBAL_SCOPE), "global", this.cfg.budgets.globalTokens);
 		const p = scope ? buildIndex(notes.filter((n) => n.scope === scope), scope, this.cfg.budgets.projectTokens) : undefined;
 		const key = scope ? (scopes.find((s) => s.id === scope)?.key ?? proj.key) : proj.key;
+		// The folder has a remote now, its memory is still under its old `local:` key: move it (for the next session; this one gets it as it is).
+		const before = new Set([proj.root, proj.checkout, cwd].filter(Boolean).map((p) => `local:${p}`));
+		if (!proj.key.startsWith("local:") && scopes.some((s) => before.has(s.key ?? keyOfScope(s.id) ?? ""))) {
+			void this.followRemotes().catch((err) => this.log(`could not move the scope of ${key}: ${err instanceof Error ? err.message : err}`));
+		}
 		const text = renderInjection({
 			memver,
 			global: g.body,

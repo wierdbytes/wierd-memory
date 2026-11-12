@@ -75,6 +75,13 @@ source): `pi install /path/to/wierd-memory/packages/pi`.
     worktrees/dreams/             the dreams branch, checked out
 ```
 
+A project's key is its git `origin` remote, normalized (`github.com/owner/repo`) — every clone and worktree of a
+repository shares one memory — or `local:<repo root>` for a folder without a remote. When such a folder gets a
+remote later, its memory follows by itself: the server moves `scopes/projects/local__…` into the remote's scope
+(one commit, `scope local:/… → github.com/…: the folder got a git remote`; notes keep their ids and files, what is
+still proposed moves along on the dreams branch), and dreams file the folder's past sessions under the new key. This
+happens when the server starts, before every dream, and when a session starts in that folder.
+
 A note:
 
 ```markdown

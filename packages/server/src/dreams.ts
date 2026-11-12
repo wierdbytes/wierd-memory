@@ -277,6 +277,9 @@ export class Dreams {
 		const run = await state.run(runId);
 		if (!run) throw notFound(`run ${runId}`);
 		if (run.status !== "running") throw new HttpError(409, `run ${runId} is ${run.status}`);
+		// The dream files sessions under their folders' current keys: a folder that got a git remote since has its
+		// memory moved to the new key first, so the dream sees it there (and never writes to the old scope).
+		await this.app.followRemotes().catch((err) => this.app.log(`could not move the scopes of folders that got a git remote: ${err instanceof Error ? err.message : err}`));
 		// What the dream works on: approved memory plus what is still proposed, in step with the approved branch.
 		await this.app.lock(() => this.app.reviews.sync());
 		const ref = this.app.reviewBranch;
@@ -307,7 +310,8 @@ export class Dreams {
 			config: cfg,
 			home: paths.home,
 			state: { cutoffMs: cutoff, sessions: marks, rejected },
-			inbox,
+			// An item kept in a folder that got a git remote since belongs to the remote's key now.
+			inbox: await Promise.all(inbox.map(async (i) => ({ ...i, projectKey: await this.app.currentKey(i.cwd, i.projectKey) }))),
 			comments: comments.filter((c) => !c.processedRun).map(({ processedAt: _at, ...c }) => c),
 			notes,
 			pending: notes.filter((n) => !mainIds.has(n.id)).map((n) => n.id),

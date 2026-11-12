@@ -47,7 +47,19 @@ scripts/build-pi.ts     `bun run build:pi`: packages/pi/dist — index.js (core 
 
 - The approved branch (`memory.branch`, `MAIN` in code) is approved memory. Only these write to it: a hand edit
   (`App`), an accepted review item (`Reviews.accept`), a file edited outside the server (`App.adopt` commits it),
-  a pull. A dream never does: `Reviews.submit` writes to the dreams branch (`memory.reviewBranch`, `dreams`).
+  a pull, and one mechanical move: a project scope keyed `local:<root>` whose folder now has a git remote is moved
+  into the remote's scope (`App.followRemotes`, see below). A dream never does: `Reviews.submit` writes to the
+  dreams branch (`memory.reviewBranch`, `dreams`).
+- A project's memory follows its key (`project.ts`: the normalized `origin` remote, else `local:<root>`). When a
+  folder gets a remote, `App.followRemotes` moves its `local:` scope into `projectScope(<remote key>)` —
+  `MemoryStore.moveScope`, byte for byte: ids, evidence and file names stay (a name taken in the target gets a
+  suffix), the charter and skills come along, the old folder goes. One commit on the approved branch, then
+  `afterMainChange()` carries it into the dreams branch; what is only proposed in the old scope is moved there after
+  it (a second commit, on `dreams`). It runs at server start, before a dream's workspace is built
+  (`Dreams.workspace`) and when a session starts in such a folder (`App.context`, in the background); it is
+  idempotent. Digests follow the same way: every refresh asks each session's folder for its key again and rebuilds a
+  digest filed under another one (`updateDigests`); inbox items are shown and handed to dreams under their folder's
+  current key. `resolveProject` answers from a cache for a minute (`maxAgeMs` 0: ask git now).
 - The dreams branch is permanent: approved memory plus whatever is still proposed. It is made at start when missing
   (from the remote's, else from the approved branch) and never deleted; nothing opens or closes. Any subset of the
   items can be decided at any time; every decision is appended to `decisions.jsonl`. `review.json` `runs` holds

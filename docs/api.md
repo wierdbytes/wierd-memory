@@ -42,8 +42,8 @@ Everything is JSON under `/api`. Types are in [`packages/core/src/api.ts`](../pa
 
 | | |
 |---|---|
-| `GET /api/context?cwd=<dir>` | `ContextInfo`: the project `cwd` belongs to (as pi resolves it: origin remote, else repo root), its scope if it has memory, the `<memory>` section text for a session started there, folders with approved skills. |
-| `GET /api/search?q=&scope=all\|notes\|sessions&projects=current\|all&cwd=&limit=&exclude=<session id>&off=1` | `SearchResult`: notes (BM25, ru+en) and past-session digest chunks; `text` is the answer as the `memory_search` tool prints it. Notes that are turned off are left out unless `off=1`. |
+| `GET /api/context?cwd=<dir>` | `ContextInfo`: the project `cwd` belongs to (as pi resolves it: origin remote, else repo root), its scope if it has memory, the `<memory>` section text for a session started there, folders with approved skills. A folder that got a git remote while its memory is still under `local:<root>`: that scope is served (by its root) and the server moves it to the remote's key in the background (`scope local:… → …` commit). |
+| `GET /api/search?q=&scope=all\|notes\|sessions&projects=current\|all&cwd=&limit=&exclude=<session id>&off=1` | `SearchResult`: notes (BM25, ru+en) and past-session digest chunks; `text` is the answer as the `memory_search` tool prints it. Notes that are turned off are left out unless `off=1`. `projects=current` in a folder that got a git remote also searches its sessions still filed under its old `local:` key (until the next dream refiles them). |
 | `GET /api/read?ref=<m-id \| s:session#entry>` | `{ text }`: a note with its evidence, or a session entry with the entries around it (the `memory_read` tool). |
 | `POST /api/evidence` | `{ refs: [{ s, e: [] }] }` → `EvidenceInfo`: for each cited session its name / first user line / start / cwd / file and the cited digest lines by entry id (`null` when the line is not in the digest; `missing: true` when the session has no digest); inbox items for `inbox:<id>` refs; review comments for `comment:<id>` refs. |
 
@@ -51,7 +51,7 @@ Everything is JSON under `/api`. Types are in [`packages/core/src/api.ts`](../pa
 
 | | |
 |---|---|
-| `GET /api/inbox?status=pending\|done\|dismissed\|all` | `InboxItem[]`, newest first (`scopeId`, `projectName` filled in). |
+| `GET /api/inbox?status=pending\|done\|dismissed\|all` | `InboxItem[]`, newest first (`scopeId`, `projectName` filled in). `projectKey` is the key the item's `cwd` has now (a folder that got a git remote since has the remote's). |
 | `POST /api/inbox` | `InboxInput` → `InboxItem`. `cwd` decides the project. |
 | `DELETE /api/inbox/:id` | Dismiss: the next dream will not see it. |
 
