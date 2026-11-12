@@ -381,8 +381,8 @@ function ReviewPage({ view, scopes, actions, set, reload }: PageProps) {
 			) : null}
 
 			{view.rejectedByCheck.length ? (
-				<Fold className="section" title="Rejected by the dream’s own fact check" count={view.rejectedByCheck.length}>
-					<p className="dim">Proposed by a dream and thrown out by its own fact check before reaching you: nothing to decide here.</p>
+				<Fold className="section" title="Rejected by the dream’s own checks" count={view.rejectedByCheck.length}>
+					<p className="dim">Proposed by a dream and thrown out by its own checks (the fact check, the limit of new notes) before reaching you: nothing to decide here.</p>
 					<RejectedByCheck list={view.rejectedByCheck} />
 				</Fold>
 			) : null}

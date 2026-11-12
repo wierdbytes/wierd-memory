@@ -1,4 +1,7 @@
 import { describe, expect, it } from "bun:test";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
 	applyEdits,
 	applyOp,
@@ -11,7 +14,9 @@ import {
 	diffNotes,
 	keyOfScope,
 	keyToDir,
+	listRepoDocs,
 	makeNote,
+	markdownHeadings,
 	mergeNote,
 	type Note,
 	type Op,
@@ -342,7 +347,37 @@ describe("misc", () => {
 
 	it("fills prompt placeholders and takes overrides", () => {
 		expect(systemPrompt("curator", { language: "Russian", charter: "CH", globalBudget: 1, projectBudget: 2 })).toContain("CH");
+		expect(systemPrompt("curator", { language: "Russian", maxNewNotes: 4 })).toContain("At most 4 new notes");
+		expect(defaults().dream.maxNewNotesPerPass).toBe(3);
+		expect(sanitize({ dream: { maxNewNotesPerPass: 500 } }).dream.maxNewNotesPerPass).toBe(50);
 		expect(systemPrompt("cards", { language: "Russian" }, "custom {{language}}")).toBe("custom Russian");
 		expect(systemPrompt("review", { language: "English" })).toContain(`{"s": "comment:<commentId>", "e": []}`);
+	});
+});
+
+describe("repository docs", () => {
+	it("reads headings outside code fences", () => {
+		expect(markdownHeadings("# A\ntext\n```\n# comment\n```\n## `B` ##\n#### deep\n### C")).toEqual(["# A", "## B", "### C"]);
+	});
+
+	it("lists a project's Markdown with headings, the context file left out, within a size", () => {
+		const root = mkdtempSync(join(tmpdir(), "wmem-docs-"));
+		try {
+			writeFileSync(join(root, "AGENTS.md"), "# Agents\n");
+			writeFileSync(join(root, "CHANGELOG.md"), "# Changelog\n## 1.0\n");
+			writeFileSync(join(root, "README.md"), "# Root\n## Setup\n");
+			for (const dir of ["docs/deep", "packages/a", "node_modules/x", "scripts"]) mkdirSync(join(root, dir), { recursive: true });
+			writeFileSync(join(root, "docs", "api.md"), "# API\n");
+			writeFileSync(join(root, "docs", "deep", "x.md"), "no headings");
+			writeFileSync(join(root, "packages", "a", "README.md"), "# Package A\n");
+			writeFileSync(join(root, "node_modules", "x", "README.md"), "# vendored\n");
+			writeFileSync(join(root, "scripts", "README.md"), "# Scripts\n");
+			expect(listRepoDocs(root)).toEqual(["README.md: # Root · ## Setup", "CHANGELOG.md", "docs/api.md: # API", "docs/deep/x.md", "packages/a/README.md: # Package A", "scripts/README.md: # Scripts"]);
+			// past the size: the path without headings while it fits, then a count
+			expect(listRepoDocs(root, { maxChars: 55 })).toEqual(["README.md: # Root · ## Setup", "CHANGELOG.md", "docs/api.md", "… and 3 more Markdown file(s)"]);
+			expect(listRepoDocs(join(root, "missing"))).toEqual([]);
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
 	});
 });

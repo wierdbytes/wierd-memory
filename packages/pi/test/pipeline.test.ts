@@ -40,11 +40,20 @@ function session(dir: string, id: string, cwd: string, turns: Array<[string, str
 	return file;
 }
 
+interface CuratorInput {
+	notes: { global: Array<{ id: string; title: string; pending?: boolean }>; project: Array<{ id: string; title: string; pending?: boolean }> };
+	inbox: Array<{ s: string; text: string }>;
+	limits: { max_new_notes: number };
+	repo_docs: string[] | null;
+}
+
 /** Models that answer from the input they are given. */
 class Script implements DreamLlm {
 	usage: Partial<Record<Stage, StageUsage>> = {};
 	calls: Array<{ stage: Stage; system: string; user: string }> = [];
 	review: (input: { comments: Array<{ id: string; note?: string; body: string }> }) => unknown = () => ({ ops: [] });
+	/** Replaces the scripted curator when set. */
+	curator?: (input: CuratorInput) => unknown;
 
 	totalCost(): number {
 		return Object.values(this.usage).reduce((s, u) => s + (u?.cost ?? 0), 0);
@@ -71,6 +80,7 @@ class Script implements DreamLlm {
 			};
 		}
 		if (stage === "analyze" && system.includes("left comments")) return this.review(JSON.parse(user));
+		if (stage === "analyze" && this.curator) return this.curator(JSON.parse(user));
 		if (stage === "analyze") {
 			const input = JSON.parse(user) as { sessions: Array<{ session: string; learnings: Array<{ statement: string; evidence: string[] }> }>; notes: { project: Array<{ id: string; title: string; body: string; off?: boolean }> }; inbox: Array<{ s: string; text: string }> };
 			const ops: unknown[] = [];
@@ -119,7 +129,8 @@ beforeAll(async () => {
 		["bbbb0001", "user", "Никогда не трогай vendor/"],
 		["bbbb0002", "assistant", "Понял."],
 	]);
-	writeFileSync(join(home, "config.json"), JSON.stringify({ port: 17633 }));
+	// Room for every scripted add; the limit has its own test.
+	writeFileSync(join(home, "config.json"), JSON.stringify({ port: 17633, dream: { maxNewNotesPerPass: 10 } }));
 	app = await App.start({ home, noSchedule: true, log: () => {} });
 }, 60_000);
 
@@ -237,6 +248,76 @@ describe("a dream", () => {
 		expect((await app.reviews.view()).pending).toBe(0);
 		const report = (await app.state.run(id))?.report;
 		expect(report?.rejected.some((r) => r.reason.includes("turned off"))).toBe(true);
+	});
+
+	it("keeps to the limit of new notes and shows the curator the project's docs", async () => {
+		writeFileSync(join(proj, "README.md"), "# Proj\n\n## Build\n\n```sh\n# not a heading\n```\n\n### Release\n");
+		mkdirSync(join(proj, "docs"), { recursive: true });
+		writeFileSync(join(proj, "docs", "guide.md"), "# Guide\n## Deploy\n");
+		const item = await app.state.addInbox({ source: "user", text: "Четыре заметки", cwd: proj, projectKey: `local:${proj}`, scope: "project" });
+		app.cfg.dream.maxNewNotesPerPass = 2;
+		const llm = new Script();
+		let seen: CuratorInput | undefined;
+		llm.curator = (input) => {
+			seen = input;
+			return { ops: ["Первая", "Вторая", "Третья", "Четвёртая"].map((t, i) => ({ op: "add", ref: `a${i + 1}`, scope: "project", type: "fact", title: `${t} заметка о сборке проекта`, body: "", index: "none", rationale: "из inbox", evidence: [{ s: `inbox:${item.id}`, e: [] }] })) };
+		};
+		try {
+			const { id } = await run(llm);
+			expect(seen?.limits).toEqual({ max_new_notes: 2 });
+			expect(llm.calls.find((c) => c.stage === "analyze")?.system).toContain("At most 2 new notes");
+			expect(seen?.repo_docs).toEqual(["README.md: # Proj · ## Build · ### Release", "docs/guide.md: # Guide · ## Deploy"]);
+			// only what is under the limit reaches the fact check
+			expect(JSON.parse(llm.calls.find((c) => c.stage === "verify")?.user ?? "{}").proposals.map((p: { ref: string }) => p.ref)).toEqual(["a1", "a2"]);
+			const report = (await app.state.run(id))?.report;
+			expect(report?.items.map((i) => i.kind)).toEqual(["added", "added"]);
+			expect(report?.rejected.map((r) => [r.ref, r.reason.startsWith("over the limit of 2 new note(s)")])).toEqual([["a3", true], ["a4", true]]);
+			expect((await app.reviews.view()).items.map((i) => i.note.title).sort()).toEqual(["Вторая заметка о сборке проекта", "Первая заметка о сборке проекта"]);
+		} finally {
+			app.cfg.dream.maxNewNotesPerPass = 10;
+		}
+	});
+
+	it("withdraws its own earlier proposals without evidence or a fact check", async () => {
+		const proposed = (await app.reviews.view()).items.map((i) => i.note);
+		const first = proposed.find((n) => n.title.startsWith("Первая"))?.id as string;
+		const second = proposed.find((n) => n.title.startsWith("Вторая"))?.id as string;
+		const approved = (await app.mem.notes()).find((n) => n.title.startsWith("Тесты"))?.id as string;
+		// an inbox item, so that the project gets a pass
+		await app.state.addInbox({ source: "agent", text: "Ещё раз про сборку", cwd: proj, projectKey: `local:${proj}`, scope: "project" });
+		const llm = new Script();
+		let seen: CuratorInput | undefined;
+		llm.curator = (input) => {
+			seen = input;
+			return {
+				ops: [
+					{ op: "deprecate", ref: "w1", id: first, rationale: "дубликат README", evidence: [] },
+					{ op: "deprecate", ref: "w2", id: second, rationale: "", evidence: [] },
+					// an approved note still needs evidence and the fact check
+					{ op: "deprecate", ref: "d1", id: approved, rationale: "устарело", evidence: [] },
+				],
+			};
+		};
+		const { id } = await run(llm);
+		// project passes mark what is only proposed
+		const pendingIds = seen?.notes.project.filter((n) => n.pending).map((n) => n.id).sort();
+		expect(pendingIds).toEqual([first, second].sort());
+		expect(seen?.notes.project.find((n) => n.id === approved)?.pending).toBeUndefined();
+		expect(llm.calls.some((c) => c.stage === "verify")).toBe(false);
+		const report = (await app.state.run(id))?.report;
+		expect(report?.items).toHaveLength(1);
+		expect(report?.items[0]).toMatchObject({ kind: "removed", id: first, why: ["дубликат README"], evidence: [] });
+		expect(report?.items[0].note).toContain("withdrawn");
+		expect(report?.rejected.map((r) => [r.ref, r.reason])).toEqual([
+			["w2", "withdrawing a proposal needs a rationale"],
+			["d1", "no evidence cited"],
+		]);
+		const v = await app.reviews.view();
+		expect(v.items.map((i) => i.note.id)).toEqual([second]);
+		expect((await app.mem.notes()).find((n) => n.id === approved)?.status).toBe("active");
+		// leave nothing proposed for the tests after this one
+		await app.reviews.reject({ all: true }, "test");
+		expect((await app.reviews.view()).pending).toBe(0);
 	});
 
 	it("refiles a folder's sessions and memory when it gets a git remote", async () => {

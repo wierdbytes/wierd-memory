@@ -118,6 +118,7 @@ export function SettingsScreen() {
 				<div className="form-row">
 					<Num label="Parallel card calls" value={draft.dream.concurrency} min={1} max={16} onChange={(v) => set("dream", { ...draft.dream, concurrency: v })} />
 					<Num label="Max runtime, minutes" value={draft.dream.maxRuntimeMinutes} min={5} onChange={(v) => set("dream", { ...draft.dream, maxRuntimeMinutes: v })} />
+					<Num label="New notes per curator pass" hint="per project of a dream; the curator's lower-ranked adds are dropped" value={draft.dream.maxNewNotesPerPass} min={1} max={50} onChange={(v) => set("dream", { ...draft.dream, maxNewNotesPerPass: v })} />
 					<Field label="pi executable" hint="pi from PATH by default">
 						<input type="text" className="mono" value={draft.dream.piCommand} onChange={(ev) => set("dream", { ...draft.dream, piCommand: ev.target.value })} />
 					</Field>

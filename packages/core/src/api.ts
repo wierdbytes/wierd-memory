@@ -243,7 +243,7 @@ export interface ReviewView extends ReviewSummary {
 	comments: ReviewComment[];
 	/** The latest decisions, newest first (more: `GET /api/review/decisions`). */
 	recent: ReviewDecision[];
-	/** What the dreams behind the pending items proposed and their own fact check threw out. */
+	/** What the dreams behind the pending items proposed and their own checks threw out (fact check, limit of new notes). */
 	rejectedByCheck: Array<ReportRejected & { run: string }>;
 	warnings: string[];
 	/** The dreams whose proposals are still pending, newest first. */

@@ -9,8 +9,10 @@
  * 3. summarize pending sessions into cards (cheap model, cached)
  * 4. review pass: turn review comments into operations
  * 5. per project: the curator proposes operations (strong model) with history
- *    hits from older sessions; cited evidence is looked up in the raw
- *    sessions; an independent model checks every operation against it
+ *    hits from older sessions and the list of the project's docs; withdrawals
+ *    of earlier proposals apply at once, adds past `dream.maxNewNotesPerPass`
+ *    are dropped; cited evidence is looked up in the raw sessions; an
+ *    independent model checks every other operation against it
  * 6. code applies what passed to an in-memory copy of the notes
  * 7. hand the result to the server: it writes the changes to the dreams
  *    branch, where they wait for the user — nothing becomes memory here
@@ -49,6 +51,7 @@ import {
 	isoMinute,
 	isSessionEvidence,
 	keyToDir,
+	listRepoDocs,
 	listSessionFiles,
 	type Note,
 	type Op,
@@ -86,6 +89,10 @@ import {
 } from "@wierd-memory/core";
 
 const MINUTE = 60_000;
+/** Note titles shown per other project (for duplicates across projects). */
+const OTHER_PROJECT_TITLES = 60;
+/** Size of the list of a project's docs given to the curator. */
+const REPO_DOCS_CHARS = 4000;
 
 /** The models, as the dream needs them (pi's registry in production, a script in tests). */
 export interface DreamLlm {
@@ -717,8 +724,9 @@ export async function dream(runId: string, deps: DreamDeps): Promise<DreamOutcom
 	mkdirSync(runDir, { recursive: true });
 	const save = (name: string, v: unknown) => saveJson(join(runDir, name), v);
 	const problems: string[] = [];
+	const maxNewNotes = cfg.dream.maxNewNotesPerPass;
 	const prompt = (name: "cards" | "curator" | "review" | "verify", vars: { charter?: string } = {}) =>
-		systemPrompt(name, { language: cfg.language, charter: vars.charter, globalBudget: cfg.budgets.globalTokens, projectBudget: cfg.budgets.projectTokens }, w.prompts[name]);
+		systemPrompt(name, { language: cfg.language, charter: vars.charter, globalBudget: cfg.budgets.globalTokens, projectBudget: cfg.budgets.projectTokens, maxNewNotes }, w.prompts[name]);
 	const blank = (): DreamSubmit => ({ runId, status: "noop", changes: { notes: [], removed: [], scopes: [], skills: [] }, votes: {}, report: emptyReport(runId, cfg), marks: {}, inboxDone: [], commentsDone: [], agents: [], sessions: 0, cost: 0 });
 	log(`dream ${runId} (${kind}) — ${w.notes.length} notes, ${w.inbox.length} inbox item(s)${w.pending.length ? `, ${w.pending.length} proposed note(s) not decided yet` : ""}`);
 
@@ -794,6 +802,8 @@ export async function dream(runId: string, deps: DreamDeps): Promise<DreamOutcom
 
 	// The notes this dream works on: approved memory plus what is still proposed.
 	const ws = new Workspace(w.notes, date, { pending: w.pending, scopes: w.scopes });
+	// What the curator may withdraw without evidence: proposals nothing has approved yet.
+	const pendingMark = (id: string) => (ws.pending.has(id) ? { pending: true } : {});
 	const titleAtStart = new Map(w.notes.map((n) => [n.id, n.title]));
 	const changes: ReportChange[] = [];
 	const rejected: ReportRejected[] = [];
@@ -813,7 +823,7 @@ export async function dream(runId: string, deps: DreamDeps): Promise<DreamOutcom
 			scopes: Object.fromEntries(
 				[...ws.notes].map(([sc, ns]) => [
 					sc,
-					{ title: scopeTitles[sc] ?? sc, notes: ns.filter((n) => n.status === "active").map((n) => ({ ...noteForPrompt(n, startOf), ...(ws.pending.has(n.id) ? { pending: true } : {}) })) },
+					{ title: scopeTitles[sc] ?? sc, notes: ns.filter((n) => n.status === "active").map((n) => ({ ...noteForPrompt(n, startOf), ...pendingMark(n.id) })) },
 				]),
 			),
 		};
@@ -931,7 +941,8 @@ export async function dream(runId: string, deps: DreamDeps): Promise<DreamOutcom
 			ws.ensureScope(sc, { key: k, root: projects.rootOf(k)?.root });
 			scopeTitles[sc] = k;
 			const active = ws.scope(sc).filter((n) => n.status === "active" && n.enabled);
-			return { scope: `project:${k}`, why: [...why], notes: active.slice(0, 12).map((n) => ({ id: n.id, title: n.title })) };
+			// Titles are cheap and they are how the curator sees a duplicate in another project.
+			return { scope: `project:${k}`, why: [...why], notes: active.slice(0, OTHER_PROJECT_TITLES).map((n) => ({ id: n.id, title: n.title, ...pendingMark(n.id) })) };
 		});
 		for (const c of g.cards) for (const f of c.memoryFeedback) votes.push({ id: f.id, effect: f.effect });
 		const projectCharter = charterOf.get(scope) || defaultProjectCharter;
@@ -939,19 +950,24 @@ export async function dream(runId: string, deps: DreamDeps): Promise<DreamOutcom
 		// One AGENTS.md proposal at a time: while one awaits review, do not stack another.
 		const agentsWaiting = ctxFile ? w.agentsPending.some((a) => a.repoRoot === proj.root) || agentsOps.some((a) => a.repoRoot === proj.root) : false;
 		const used = (sc: string, budget: number) => buildIndex(ws.scope(sc), sc, budget).tokens;
+		// What the repository already documents (paths and headings): the curator only gets the context file whole.
+		const docsRoot = proj.exists ? (proj.checkout ?? proj.root) : undefined;
+		const repoDocs = docsRoot && existsSync(docsRoot) ? listRepoDocs(docsRoot, { maxChars: REPO_DOCS_CHARS, exclude: ctxFile ? [ctxFile.rel] : [] }) : [];
 		const input = {
-			project: { key, scope: "project", root: proj.root },
+			project: { key, scope: "project", root: proj.root, ...(projects.isBroad(key) ? { workspace: true } : {}) },
 			other_projects: otherProjects,
 			budgets: {
 				global: { budget: cfg.budgets.globalTokens, used: used(GLOBAL_SCOPE, cfg.budgets.globalTokens) },
 				project: { budget: cfg.budgets.projectTokens, used: used(scope, cfg.budgets.projectTokens) },
 			},
 			notes: {
-				global: ws.scope(GLOBAL_SCOPE).filter((n) => n.status === "active").map((n) => noteForPrompt(n, startOf)),
-				project: ws.scope(scope).filter((n) => n.status === "active").map((n) => noteForPrompt(n, startOf)),
+				global: ws.scope(GLOBAL_SCOPE).filter((n) => n.status === "active").map((n) => ({ ...noteForPrompt(n, startOf), ...pendingMark(n.id) })),
+				project: ws.scope(scope).filter((n) => n.status === "active").map((n) => ({ ...noteForPrompt(n, startOf), ...pendingMark(n.id) })),
 			},
+			limits: { max_new_notes: maxNewNotes },
 			sessions: sessionsInput,
 			inbox: g.inbox.map((i) => ({ s: `inbox:${i.id}`, at: i.ts, source: i.source, kind: i.kind, scope: i.scope, text: i.text })),
+			repo_docs: repoDocs.length ? repoDocs : null,
 			context_file: ctxFile ? { path: ctxFile.rel, content: clipHead(readFileSync(ctxFile.path, "utf-8"), 40_000), ...(agentsWaiting ? { pending: true } : {}) } : null,
 			rejected_before: w.state.rejected.slice(-40),
 		};
@@ -962,7 +978,35 @@ export async function dream(runId: string, deps: DreamDeps): Promise<DreamOutcom
 		problems.push(...parsed.problems.map((p) => `${shortKey(key)}: ${p}`));
 		log(`curator ${shortKey(key)}: ${parsed.ops.length} op(s)`);
 		if (!parsed.ops.length) continue;
-		const resolved = await Promise.all(parsed.ops.map((op) => resolveOp(op, edeps)));
+		// Withdrawing an earlier dream's proposal removes only what nothing approved: the rationale is enough, no evidence or
+		// fact check (which would drop it for want of evidence and leave the stale proposal to the user). Applied first, so
+		// an add that replaces a withdrawn proposal is not merged into it as a duplicate.
+		const toCheck: Op[] = [];
+		for (const op of parsed.ops) {
+			if (op.op !== "deprecate" || !ws.pending.has(op.id)) {
+				toCheck.push(op);
+				continue;
+			}
+			if (!op.rationale) {
+				rejected.push({ ref: op.ref, op: op.op, title: opTitle(op), reason: "withdrawing a proposal needs a rationale" });
+				continue;
+			}
+			// Evidence it cites is shown in the report when it resolves; it is not required.
+			const cited = op.evidence.length ? await resolveRefs(op.evidence, edeps) : undefined;
+			const evidence = cited && !cited.error ? cited.evidence : [];
+			const res = applyOp(ws, op, { projectScope: scope, evidence });
+			if (!res.ok) rejected.push({ ref: op.ref, op: op.op, title: opTitle(op), reason: res.reason });
+			else changes.push({ ...res.change, note: "withdrawn: an earlier dream's proposal, never approved", rationale: op.rationale, evidence, source: "curator" });
+		}
+		// Fewer, stronger notes: the curator orders its ops by importance, adds past the limit are dropped before the check.
+		let adds = 0;
+		const capped = toCheck.filter((op) => {
+			if (op.op !== "add" || ++adds <= maxNewNotes) return true;
+			rejected.push({ ref: op.ref, op: op.op, title: opTitle(op), reason: `over the limit of ${maxNewNotes} new note(s) per curator pass (dream.maxNewNotesPerPass); the curator ranked it lower` });
+			return false;
+		});
+		if (adds > maxNewNotes) log(`  ${adds - maxNewNotes} add(s) over the limit of ${maxNewNotes} dropped`);
+		const resolved = await Promise.all(capped.map((op) => resolveOp(op, edeps)));
 		for (const r of resolved.filter((x) => x.error)) rejected.push({ ref: r.op.ref, op: r.op.op, title: opTitle(r.op), reason: r.error ?? "" });
 		const valid = resolved.filter((x) => !x.error);
 		for (const r of valid) {

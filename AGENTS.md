@@ -17,6 +17,7 @@ packages/core/src/      shared, no dependencies, no pi imports (runs under bun, 
   workspace.ts          the curator's operations applied to an in-memory copy of the notes (parseOps, applyOp)
   diff.ts               diffNotes (review items) and mergeNote / rebaseNotes (three-way, by column)
   api.ts                types of the HTTP API — the contract of server, web, pi, mod, CLI
+  repodocs.ts           what a project already documents (Markdown paths + headings) — the curator's "repo_docs"
   digest.ts sessions.ts project(s).ts search.ts secrets.ts prompts.ts schedule.ts report.ts config.ts layout.ts
 packages/server/src/
   git.ts                Repo: the memory repository — the dreams branch's worktree, commits, history, the remote

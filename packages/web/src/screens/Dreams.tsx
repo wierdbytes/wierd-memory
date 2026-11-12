@@ -400,7 +400,7 @@ function Report({ report: d, scopes }: { report: RunDetail["report"] & ReportDat
 			) : null}
 
 			{d.rejected?.length ? (
-				<Fold title="Rejected by the fact check" count={d.rejected.length} className="section">
+				<Fold title="Rejected by the checks" count={d.rejected.length} className="section">
 					<div className="rows">
 						{d.rejected.map((x) => (
 							<div key={x.ref} className="row row-top">
@@ -517,7 +517,8 @@ function Report({ report: d, scopes }: { report: RunDetail["report"] & ReportDat
 }
 
 function ReportRow({ item: it, titles, scopeName }: { item: ReportItem; titles: Record<string, string>; scopeName: (id: string) => string }) {
-	const k = kindInfo(it.kind);
+	// A dream only removes notes nothing approved: its own earlier proposals, withdrawn.
+	const k = it.kind === "removed" ? { glyph: "✕", label: "Withdrawn", tone: "dim" } : kindInfo(it.kind);
 	const [open, setOpen] = useState(false);
 	return (
 		<div className="report-item">

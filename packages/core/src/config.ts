@@ -63,6 +63,11 @@ export interface WmemConfig {
 		concurrency: number;
 		maxRuntimeMinutes: number;
 		/**
+		 * New notes one curator pass may propose (per project of a dream); the
+		 * curator ranks its adds, the ones past the limit are dropped and reported.
+		 */
+		maxNewNotesPerPass: number;
+		/**
 		 * Extensions loaded into the headless pi that dreams (it runs with
 		 * `--no-extensions`). Use it for provider/auth extensions. `npm:<name>`
 		 * resolves to pi's installed copy; missing entries are skipped.
@@ -99,6 +104,7 @@ export function defaults(): WmemConfig {
 			minIdleMinutes: 30,
 			concurrency: 4,
 			maxRuntimeMinutes: 180,
+			maxNewNotesPerPass: 3,
 			childExtensions: ["npm:@wierdbytes/pi-anthropic"],
 			piCommand: "pi",
 		},
@@ -160,6 +166,7 @@ export function sanitize(raw: unknown): WmemConfig {
 			minIdleMinutes: num(s.minIdleMinutes, 0, 24 * 60, d.dream.minIdleMinutes),
 			concurrency: Math.round(num(s.concurrency, 1, 16, d.dream.concurrency)),
 			maxRuntimeMinutes: num(s.maxRuntimeMinutes, 5, 24 * 60, d.dream.maxRuntimeMinutes),
+			maxNewNotesPerPass: Math.round(num(s.maxNewNotesPerPass, 1, 50, d.dream.maxNewNotesPerPass)),
 			childExtensions: Array.isArray(s.childExtensions) ? s.childExtensions.filter((x): x is string => typeof x === "string" && !!x.trim()) : d.dream.childExtensions,
 			piCommand: str(s.piCommand, d.dream.piCommand),
 		};

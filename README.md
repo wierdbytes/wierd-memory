@@ -194,14 +194,25 @@ pi -p --no-session --no-extensions -e <dream.childExtensions…> -e packages/pi/
 
 1. **Digests** of new or grown sessions (also the corpus `memory_search` reads).
 2. **Cards** (`models.cards`): what happened in each session, the user's feedback, candidate learnings with entry ids.
-3. **Curator** (`models.analyze`, per project): sees the current notes, the cards, older sessions that mention a
-   candidate, inbox items, what you rejected before and what you turned off; proposes `add` / `update` /
-   `supersede` / `deprecate` / `confirm` / `skill` / `agents_md`.
+3. **Curator** (`models.analyze`, per project): sees the current notes (those still waiting for you marked as
+   pending), the titles of other projects' notes, the cards, older sessions that mention a candidate, inbox items,
+   the project's AGENTS.md / CLAUDE.md and a list of its other docs (Markdown files with their headings), what you
+   rejected before and what you turned off; proposes `add` / `update` / `supersede` / `deprecate` / `confirm` /
+   `skill` / `agents_md`, most important first.
 4. **Fact check** (`models.verify`): every cited entry is looked up in the raw session; an independent model checks
    each operation against those excerpts and may narrow it or move it to the right scope.
 5. **Code applies** what passed, item by item (never a rewrite), and hands the result to the server, which commits
-   it to the dreams branch. The report of each dream (what it proposed and why, what the check rejected, cost) is
+   it to the dreams branch. The report of each dream (what it proposed and why, what the checks rejected, cost) is
    kept: `wmem dream report`, or the Dreams page.
+
+What clears the bar (the curator's prompt has the details; Settings shows it): a standing rule needs your own words
+or two sessions; a one-session observation is not memory unless it is a hard-won fact that would cost real time to
+rediscover; what the repository already documents, research snapshots, one-off measurements and session stories are
+not memory. A note goes to the scope of what it is about — the project that owns the tool or service, not the folder
+the session ran in; global only with your word behind it or evidence from more than one project. One curator pass
+adds at most `dream.maxNewNotesPerPass` notes (the rest are dropped and listed in the report). A dream may withdraw
+an earlier dream's proposal you have not decided yet (a duplicate, wrong, below the bar): that needs only a reason,
+no evidence or fact check, since it removes nothing approved.
 
 ## Settings
 
@@ -219,6 +230,7 @@ pi -p --no-session --no-extensions -e <dream.childExtensions…> -e packages/pi/
 | `models.cards` / `analyze` / `verify` | Sonnet low / Opus high / GPT medium | `{ "model": "provider/id", "thinking": "…" }` |
 | `schedule` | `{ enabled: false, minHoursBetween: 20, minNewSessions: 3 }` | when the server dreams on its own |
 | `dream.maxSessionsPerRun` · `minIdleMinutes` · `concurrency` · `maxRuntimeMinutes` | `60` · `30` · `4` · `180` | |
+| `dream.maxNewNotesPerPass` | `3` | new notes one curator pass (one project of a dream) may propose |
 | `dream.childExtensions` | `["npm:@wierdbytes/pi-anthropic"]` | extensions the dream process loads |
 | `dream.piCommand` | `pi` | |
 | `budgets.globalTokens` / `projectTokens` | `1000` / `1500` | index budgets |

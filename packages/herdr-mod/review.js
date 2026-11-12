@@ -478,7 +478,7 @@ export function aboutView(m, t, review) {
   if (rejected.length) {
     body.push(v_flex()
       .gap(6)
-      .child(div().pt(4).child(caption(t, `Thrown out by the dream's own fact check · ${rejected.length}`)))
+      .child(div().pt(4).child(caption(t, `Thrown out by the dream's own checks · ${rejected.length}`)))
       .child(div().text_size(12).text_color(t.dim).child("Proposed by a dream and dropped before reaching you: nothing to decide here."))
       .children(rejected.map((r, i) => box(t)
         .id(`ab-rej-${i}`)

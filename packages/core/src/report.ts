@@ -127,6 +127,7 @@ function money(n: number): string {
 	return `$${n.toFixed(n < 1 ? 3 : 2)}`;
 }
 
+// `removed` in a dream's report is always a proposal withdrawn before anyone approved it.
 const ICON: Record<string, string> = { added: "+", updated: "~", moved: "→", superseded: "⇄", deprecated: "−", removed: "✖", confirmed: "✓", merged: "✓", skill: "§" };
 
 /** A dream's report as plain Markdown (for the CLI and for reading in a terminal). */
@@ -141,7 +142,7 @@ export function renderReport(d: ReportData): string {
 	for (const [scope, items] of byScope) {
 		out.push(`## ${d.scopeTitles[scope] ?? scope}`, "");
 		for (const it of items) {
-			out.push(`- ${ICON[it.kind] ?? it.kind} **${it.title}**${it.id ? ` \`${it.id}\`` : ""}${it.index && it.index !== "none" ? ` _(${it.index})_` : ""}`);
+			out.push(`- ${ICON[it.kind] ?? it.kind} ${it.kind === "removed" ? "withdrawn: " : ""}**${it.title}**${it.id ? ` \`${it.id}\`` : ""}${it.index && it.index !== "none" ? ` _(${it.index})_` : ""}`);
 			if (it.old) out.push(`  - was: ${it.old.title}${it.old.id ? ` \`${it.old.id}\`` : ""}`);
 			for (const w of it.why) out.push(`  - why: ${w}`);
 			if (it.check) out.push(`  - check: ${it.check.verdict}${it.check.corrected ? " (corrected)" : ""}${it.check.reason ? ` — ${it.check.reason}` : ""}`);
@@ -157,7 +158,7 @@ export function renderReport(d: ReportData): string {
 		out.push("");
 	}
 	if (d.rejected.length) {
-		out.push("## Rejected by the fact check", "");
+		out.push("## Rejected by the checks", "");
 		for (const r of d.rejected) out.push(`- ${r.op} "${r.title}" — ${r.reason}`);
 		out.push("");
 	}
