@@ -8,8 +8,10 @@
  * Credentials are scrubbed from every line.
  */
 
+import { createReadStream } from "node:fs";
 import { homedir } from "node:os";
 import { normalize, resolve } from "node:path";
+import { createInterface } from "node:readline";
 import { type ParsedSession, type RawEntry, textOf } from "./sessions.ts";
 import { scrubSecrets } from "./secrets.ts";
 
@@ -144,6 +146,49 @@ function injectedIds(e: RawEntry): string[] {
 	if (e.type !== "custom" || typeof e.customType !== "string" || e.customType !== SESSION_EVENT) return [];
 	const d = e.data as { event?: string; ids?: unknown } | undefined;
 	return d?.event === "inject" && Array.isArray(d.ids) ? d.ids.filter((x): x is string => typeof x === "string") : [];
+}
+
+/** The project key the pi extension recorded at the session's start (its `inject` entry), if any. */
+function recordedKeyOf(e: RawEntry): string | undefined {
+	if (e.type !== "custom" || e.customType !== SESSION_EVENT) return undefined;
+	const d = e.data as { event?: string; projectKey?: unknown } | undefined;
+	return d?.event === "inject" && typeof d.projectKey === "string" && d.projectKey ? d.projectKey : undefined;
+}
+
+/**
+ * The project the session belonged to when it started, as pi-memory recorded it. It outlives the folder: a session
+ * in a git worktree that was removed since cannot be asked for its project any more (it would become `local:<cwd>`).
+ */
+export function recordedProjectKey(entries: RawEntry[]): string | undefined {
+	for (const e of entries) {
+		const k = recordedKeyOf(e);
+		if (k) return k;
+	}
+	return undefined;
+}
+
+/** `recordedProjectKey` read straight from a session file, stopping at the first record (no full parse). */
+export async function scanRecordedProjectKey(file: string): Promise<string | undefined> {
+	const input = createReadStream(file, { encoding: "utf8" });
+	const rl = createInterface({ input, crlfDelay: Infinity });
+	try {
+		for await (const line of rl) {
+			// Cheap test first: sessions run to tens of MB.
+			if (!line.includes(`"${SESSION_EVENT}"`) || !line.includes('"projectKey"')) continue;
+			try {
+				const k = recordedKeyOf(JSON.parse(line) as RawEntry);
+				if (k) return k;
+			} catch {
+				// a torn line
+			}
+		}
+	} catch {
+		// unreadable: nothing recorded
+	} finally {
+		rl.close();
+		input.destroy();
+	}
+	return undefined;
 }
 
 export function buildDigest(s: ParsedSession): Digest {

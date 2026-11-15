@@ -8,7 +8,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, w
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
-import { type DreamSubmit, keyToDir, projectScope, type Stage, type StageModel, type StageUsage } from "@wierd-memory/core";
+import { type DreamSubmit, keyToDir, projectScope, RepoProbe, type Stage, type StageModel, type StageUsage } from "@wierd-memory/core";
 import { App } from "../../server/src/app.ts";
 import { type DreamApi, dream, type DreamLlm, loadDigestIndex, parseRunArgs } from "../pipeline.ts";
 
@@ -353,9 +353,166 @@ describe("a dream", () => {
 		expect(v.items.map((i) => `${i.kind}:${i.scope}:${i.note.title}`)).toEqual([`added:${projectScope(key)}:Всегда пиши changelog`]);
 	});
 
+	it("files a session from a removed worktree under the key pi-memory recorded at its start", async () => {
+		const key = "github.com/o/proj";
+		const gone = join(home, "proj-wt-gone");
+		const id = "01a1b2c3-0000-7000-8000-0000000000a5";
+		const dir = join(home, "sessions", "--proj-wt-gone--");
+		mkdirSync(dir, { recursive: true });
+		const file = join(dir, `2026-11-08T10-00-00_${id}.jsonl`);
+		writeFileSync(
+			file,
+			`${[
+				{ type: "session", id, cwd: gone, timestamp: "2026-11-08T10:00:00.000Z" },
+				{ type: "custom", customType: "wierd-memory", id: "eeee0000", parentId: null, data: { event: "inject", ids: [], projectKey: key } },
+				{ type: "message", id: "eeee0001", parentId: "eeee0000", timestamp: "2026-11-08T10:05:00.000Z", message: { role: "user", content: "проверь строки" } },
+			]
+				.map((e) => JSON.stringify(e))
+				.join("\n")}\n`,
+		);
+		const indexPath = join(home, "memory", ".local", "digests", "index.json");
+		await run(new Script(), "reindex");
+		expect(loadDigestIndex(indexPath)[file]).toMatchObject({ projectKey: key, dir: keyToDir(key), recordedKey: key });
+		// A digest made before the key was recorded in the index: filed as `local:<cwd>`, it is looked up in the session once.
+		const index = loadDigestIndex(indexPath);
+		const localDir = keyToDir(`local:${gone}`);
+		index[file] = { ...index[file], projectKey: `local:${gone}`, dir: localDir, recordedKey: undefined };
+		mkdirSync(join(home, "memory", ".local", "digests", localDir), { recursive: true });
+		writeFileSync(join(home, "memory", ".local", "digests", localDir, `${id}.txt`), "old\n");
+		writeFileSync(indexPath, JSON.stringify(index));
+		await run(new Script(), "reindex");
+		expect(loadDigestIndex(indexPath)[file]).toMatchObject({ projectKey: key, dir: keyToDir(key), recordedKey: key });
+		expect(existsSync(join(home, "memory", ".local", "digests", localDir))).toBe(false);
+		rmSync(dir, { recursive: true, force: true });
+	});
+
 	it("parses the runner's arguments", () => {
 		expect(parseRunArgs("--run-id 20261109-1200-abcd --max 5 --since 3")).toEqual({ runId: "20261109-1200-abcd", maxSessions: 5, sinceDays: 3 });
 		expect(parseRunArgs("--dry")).toEqual({ mode: "dry" });
 		expect(parseRunArgs("--review-only --max x")).toEqual({ mode: "review" });
+	});
+
+	// From here on the project is a git repository (github.com/o/proj): the checkout can be searched.
+	const KEY = "github.com/o/proj";
+	type Checked = { ref: string; repo_docs?: Array<{ path: string; heading: string; snippet: string }>; gone?: string[] };
+	/** The scripted models, with a fact check that answers from what the checkout says. */
+	class RepoAware extends Script {
+		override async json<T>(stage: Stage, spec: StageModel, system: string, user: string, validate: (v: unknown) => T): Promise<T> {
+			if (stage !== "verify") return super.json(stage, spec, system, user, validate);
+			this.calls.push({ stage, system, user });
+			const input = JSON.parse(user) as { proposals: Checked[] };
+			return validate({
+				verdicts: input.proposals.map((p) =>
+					p.gone?.length ? { ref: p.ref, verdict: "contradicted", unsafe: false, reason: "кода больше нет" } : p.repo_docs?.length ? { ref: p.ref, verdict: "documented", unsafe: false, reason: `сказано в ${p.repo_docs[0].path}` } : { ref: p.ref, verdict: "supported", unsafe: false, reason: "" },
+				),
+			});
+		}
+	}
+	type RepoNote = { id: string; title: string; pending?: boolean; repo_check?: { gone: string[]; docs: Array<{ path: string }> } };
+	type RepoInput = { recheck?: boolean; sessions: Array<{ session: string; learnings: Array<{ statement: string; evidence: string[]; docs?: Array<{ path: string; heading: string; snippet: string }> }> }>; inbox: unknown[]; notes: { project: RepoNote[] } };
+	let stale = "";
+
+	it("shows the curator and the fact check what the checkout says", async () => {
+		mkdirSync(join(proj, "docs"), { recursive: true });
+		writeFileSync(join(proj, "docs", "lint.md"), "# Линтер\n\n## Перед коммитом\n\nВсегда запускай линтер перед каждым коммитом проекта: `bun run lint` проверяет весь проект.\n");
+		// Only what the repository had counts as gone: its history says so.
+		const commit = (message: string) => {
+			execFileSync("git", ["-C", proj, "add", "Cards.swift"]);
+			execFileSync("git", ["-C", proj, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", message, "--", "Cards.swift"]);
+		};
+		writeFileSync(join(proj, "Cards.swift"), "struct PhoneCardView {}\nstruct PhoneListGestures {}\n");
+		commit("cards");
+		// A proposal about code the checkout has: it passes and waits for review.
+		const item = await app.state.addInbox({ source: "user", text: "Жесты карточек", cwd: proj, projectKey: KEY, scope: "project" });
+		const first = new RepoAware();
+		first.curator = () => ({
+			ops: [{ op: "add", ref: "g1", scope: "project", type: "fact", title: "Жесты списка обрабатывает `PhoneListGestures`", body: "Карточка — `PhoneCardView`; поле `transportType` из вывода devicectl.", index: "none", rationale: "из inbox", evidence: [{ s: `inbox:${item.id}`, e: [] }] }],
+		});
+		await run(first);
+		const checked = JSON.parse(first.calls.find((c) => c.stage === "verify")?.user ?? "{}").proposals as Checked[];
+		expect(checked.map((p) => [p.ref, p.gone])).toEqual([["g1", undefined]]);
+		stale = (await app.reviews.view()).items.find((i) => i.note.title.includes("PhoneListGestures"))?.note.id as string;
+		expect(stale).toBeTruthy();
+		// The code moves on while it waits; a new session repeats what docs/lint.md says.
+		writeFileSync(join(proj, "Cards.swift"), "struct PhoneCardView {}\n");
+		commit("no more gestures");
+		session(join(home, "sessions", "--proj--"), "01a1b2c3-0000-7000-8000-0000000000a6", proj, [["ffff0001", "user", "Всегда запускай линтер перед коммитом проекта"]]);
+		const llm = new RepoAware();
+		let seen: RepoInput | undefined;
+		llm.curator = (raw) => {
+			const input = raw as unknown as RepoInput;
+			seen = input;
+			const s = input.sessions[0];
+			return { ops: [{ op: "add", ref: "l1", scope: "project", type: "preference", title: s.learnings[0].statement, body: "", index: "always", rationale: "сказано", evidence: [{ s: s.session, e: s.learnings[0].evidence }] }] };
+		};
+		const { id } = await run(llm);
+		expect(seen?.recheck).toBeUndefined();
+		expect(seen?.sessions[0].learnings[0].docs?.[0]).toMatchObject({ path: "docs/lint.md", heading: "## Перед коммитом" });
+		expect(seen?.sessions[0].learnings[0].docs?.[0].snippet).toContain("bun run lint");
+		// what still waits for review is held against the checkout; approved notes are not
+		expect(seen?.notes.project.find((n) => n.id === stale)?.repo_check?.gone).toEqual(["PhoneListGestures"]);
+		expect(seen?.notes.project.filter((n) => !n.pending).some((n) => n.repo_check)).toBe(false);
+		const verified = JSON.parse(llm.calls.find((c) => c.stage === "verify")?.user ?? "{}").proposals as Checked[];
+		expect(verified[0].repo_docs?.[0].path).toBe("docs/lint.md");
+		const report = (await app.state.run(id))?.report;
+		expect(report?.items).toEqual([]);
+		expect(report?.rejected.map((r) => [r.ref, r.reason])).toEqual([["l1", "documented — сказано в docs/lint.md"]]);
+	});
+
+	it("rechecks the waiting proposals of a project no session spoke of, once per finding", async () => {
+		const notes = (await app.reviews.view()).items.map((i) => i.note);
+		const changelog = notes.find((n) => n.title.includes("changelog"))?.id as string;
+		const approved = (await app.mem.notes()).find((n) => n.title.startsWith("Тесты"))?.id as string;
+		expect([!!changelog, !!approved, notes.some((n) => n.id === stale)]).toEqual([true, true, true]);
+		// Nothing new: the stale proposal still gets a pass, which may leave it.
+		const idle = new RepoAware();
+		let seen: RepoInput | undefined;
+		idle.curator = (input) => {
+			seen = input as unknown as RepoInput;
+			return { ops: [] };
+		};
+		await run(idle);
+		expect([seen?.recheck, seen?.sessions, seen?.inbox]).toEqual([true, [], []]);
+		expect(seen?.notes.project.find((n) => n.id === stale)?.repo_check?.gone).toEqual(["PhoneListGestures"]);
+		// Asked once: the same finding on the same proposal is not asked about again.
+		const again = new RepoAware();
+		await run(again);
+		expect(again.calls).toEqual([]);
+		// Forgotten: asked again, and only withdrawals and updates of this project's proposals count.
+		rmSync(join(home, "memory", ".local", "rechecks.json"));
+		const llm = new RepoAware();
+		llm.curator = () => ({
+			ops: [
+				{ op: "deprecate", ref: "w1", id: stale, rationale: "PhoneListGestures больше нет в коде", evidence: [] },
+				{ op: "update", ref: "u1", id: changelog, body: "К каждому изменению — запись в changelog.", rationale: "точнее", evidence: [] },
+				{ op: "add", ref: "a1", scope: "project", type: "fact", title: "Новая заметка без сессий", body: "", index: "none", rationale: "—", evidence: [] },
+				{ op: "deprecate", ref: "d1", id: approved, rationale: "—", evidence: [] },
+			],
+		});
+		const { id } = await run(llm);
+		// the update is checked against the proposal's own session
+		const verified = JSON.parse(llm.calls.find((c) => c.stage === "verify")?.user ?? "{}").proposals as Array<Checked & { excerpts: string }>;
+		expect(verified.map((p) => p.ref)).toEqual(["u1"]);
+		expect(verified[0].excerpts).toContain("Всегда пиши changelog");
+		const report = (await app.state.run(id))?.report;
+		expect(report?.items.map((i) => [i.kind, i.id])).toEqual([
+			["removed", stale],
+			["updated", changelog],
+		]);
+		expect(report?.rejected.map((r) => [r.ref, r.reason.includes("recheck")])).toEqual([
+			["a1", true],
+			["d1", true],
+		]);
+		const v = await app.reviews.view();
+		expect(v.items.map((i) => i.note.id).sort()).toEqual([changelog].sort());
+		expect(v.items[0].note.body).toBe("К каждому изменению — запись в changelog.");
+		expect((await app.mem.notes()).find((n) => n.id === approved)?.status).toBe("active");
+		// The docs now say what the remaining proposal says: a hint for the next pass, never a recheck by itself.
+		writeFileSync(join(proj, "docs", "contributing.md"), "# Как вносить изменения\n\n## Правило\n\nВсегда пиши changelog: к каждому изменению — запись в changelog.\n");
+		const remaining = v.items[0].note;
+		expect(new RepoProbe(proj).docs(`${remaining.title} ${remaining.body}`)[0]?.path).toBe("docs/contributing.md");
+		const quiet = new RepoAware();
+		await run(quiet);
+		expect(quiet.calls).toEqual([]);
 	});
 });

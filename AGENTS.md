@@ -18,6 +18,11 @@ packages/core/src/      shared, no dependencies, no pi imports (runs under bun, 
   diff.ts               diffNotes (review items) and mergeNote / rebaseNotes (three-way, by column)
   api.ts                types of the HTTP API — the contract of server, web, pi, mod, CLI
   repodocs.ts           what a project already documents (Markdown paths + headings) — the curator's "repo_docs"
+  repoprobe.ts          RepoProbe: what a checkout says now — doc sections that say much of a text (BM25 over their
+                        content, a hit must cover a share of the text's rarer terms) and the files / code names it
+                        mentions that are gone: not in the checkout (`git grep`) but in its history (`git log -S`,
+                        `git log -- <path>`). Conservative: never seen, unsure or timed out is "not gone". The
+                        curator's "docs" / "repo_check", the fact check's "repo_docs" / "gone"
   digest.ts sessions.ts project(s).ts search.ts secrets.ts prompts.ts schedule.ts report.ts config.ts layout.ts
 packages/server/src/
   git.ts                Repo: the memory repository — the dreams branch's worktree, commits, history, the remote
@@ -59,7 +64,8 @@ scripts/build-pi.ts     `bun run build:pi`: packages/pi/dist — index.js (core 
   it (a second commit, on `dreams`). It runs at server start, before a dream's workspace is built
   (`Dreams.workspace`) and when a session starts in such a folder (`App.context`, in the background); it is
   idempotent. Digests follow the same way: every refresh asks each session's folder for its key again and rebuilds a
-  digest filed under another one (`updateDigests`); inbox items are shown and handed to dreams under their folder's
+  digest filed under another one (`updateDigests`); a folder that is gone (a removed git worktree) is filed under the
+  key pi-memory recorded in the session at its start (its `inject` entry), never under `local:<gone folder>`; inbox items are shown and handed to dreams under their folder's
   current key. `resolveProject` answers from a cache for a minute (`maxAgeMs` 0: ask git now).
 - The dreams branch is permanent: approved memory plus whatever is still proposed. It is made at start when missing
   (from the remote's, else from the approved branch) and never deleted; nothing opens or closes. Any subset of the

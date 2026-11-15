@@ -88,15 +88,20 @@ export class Bm25<M = unknown> {
 		this.avg = docs.length ? total / docs.length : 0;
 	}
 
+	/** How rare a (tokenized) term is in the corpus; a term no document has is the rarest. */
+	idf(term: string): number {
+		const n = this.postings.get(term)?.length ?? 0;
+		return Math.log(1 + (this.docs.length - n + 0.5) / (n + 0.5));
+	}
+
 	search(query: string, limit = 10, filter?: (doc: Doc<M>) => boolean): Hit<M>[] {
 		const terms = [...new Set(tokenize(query))];
 		if (!terms.length || !this.docs.length) return [];
 		const scores = new Map<number, number>();
-		const N = this.docs.length;
 		for (const t of terms) {
 			const list = this.postings.get(t);
 			if (!list) continue;
-			const idf = Math.log(1 + (N - list.length + 0.5) / (list.length + 0.5));
+			const idf = this.idf(t);
 			for (const [i, tf] of list) {
 				const len = this.lengths[i] || 1;
 				const s = (idf * tf * (this.k1 + 1)) / (tf + this.k1 * (1 - this.b + (this.b * len) / (this.avg || 1)));

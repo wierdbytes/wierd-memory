@@ -352,6 +352,13 @@ describe("misc", () => {
 		expect(sanitize({ dream: { maxNewNotesPerPass: 500 } }).dream.maxNewNotesPerPass).toBe(50);
 		expect(systemPrompt("cards", { language: "Russian" }, "custom {{language}}")).toBe("custom Russian");
 		expect(systemPrompt("review", { language: "English" })).toContain(`{"s": "comment:<commentId>", "e": []}`);
+		// every placeholder is filled; what the checkout says is explained to the curator and the fact check
+		const vars = { language: "Russian", charter: "CH", globalBudget: 1, projectBudget: 2, maxNewNotes: 3 };
+		for (const name of ["cards", "curator", "review", "verify"] as const) expect(systemPrompt(name, vars)).not.toContain("{{");
+		expect(systemPrompt("curator", vars)).toContain('"recheck": true');
+		expect(systemPrompt("curator", vars)).toContain('"repo_check"');
+		expect(systemPrompt("verify", vars)).toContain('- "documented"');
+		expect(systemPrompt("verify", vars)).toContain('"gone"');
 	});
 });
 

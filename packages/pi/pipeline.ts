@@ -9,15 +9,22 @@
  * 3. summarize pending sessions into cards (cheap model, cached)
  * 4. review pass: turn review comments into operations
  * 5. per project: the curator proposes operations (strong model) with history
- *    hits from older sessions and the list of the project's docs; withdrawals
- *    of earlier proposals apply at once, adds past `dream.maxNewNotesPerPass`
- *    are dropped; cited evidence is looked up in the raw sessions; an
- *    independent model checks every other operation against it
+ *    hits from older sessions, the list of the project's docs, the doc
+ *    sections that match each candidate and what the checkout says about the
+ *    proposals still waiting (code they name that is gone, docs that say the
+ *    same); withdrawals of earlier proposals apply at once, adds past
+ *    `dream.maxNewNotesPerPass` are dropped; cited evidence is looked up in
+ *    the raw sessions; an independent model checks every other operation
+ *    against it and against the checkout
+ *    5b. projects without a pass whose waiting proposals name code their
+ *    repository had and has no more get a recheck pass: it may only withdraw
+ *    or update them
  * 6. code applies what passed to an in-memory copy of the notes
  * 7. hand the result to the server: it writes the changes to the dreams
  *    branch, where they wait for the user — nothing becomes memory here
  */
 
+import { createHash } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, rmdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
@@ -27,6 +34,8 @@ import {
 	applyVotes,
 	Bm25,
 	buildDigest,
+	recordedProjectKey,
+	scanRecordedProjectKey,
 	buildIndex,
 	type Change,
 	chunkDigest,
@@ -35,6 +44,7 @@ import {
 	DEFAULT_PROJECT_CHARTER,
 	digestHeader,
 	type Doc,
+	type DocHit,
 	type DreamSubmit,
 	type DreamSubmitResult,
 	type DreamWorkspace,
@@ -52,6 +62,7 @@ import {
 	isSessionEvidence,
 	keyToDir,
 	listRepoDocs,
+	RepoProbe,
 	listSessionFiles,
 	type Note,
 	type Op,
@@ -147,6 +158,8 @@ export interface DigestRecord {
 	root?: string;
 	/** The root is a real project (git repo or project markers). */
 	project?: boolean;
+	/** The key pi-memory recorded at the session's start ("": none) — what speaks for a folder that is gone. */
+	recordedKey?: string;
 	dir: string;
 	cwd: string;
 	started: string;
@@ -199,12 +212,16 @@ export async function updateDigests(files: SessionFile[], P: HomePaths, log: (m:
 		if (!p) asked.set(dir, (p = resolveProject(dir, 0)));
 		return p;
 	};
-	// A folder that is gone says nothing about its project: then the root the session was filed under speaks for it.
-	const projectOf = async (cwd: string, root?: string) => {
+	// A folder that is gone says nothing about its project: then the root the session was filed under speaks for it,
+	// else the key pi-memory recorded when the session started (a removed git worktree would become `local:<cwd>`).
+	const projectOf = async (cwd: string, root?: string, recorded?: string): Promise<ProjectInfo> => {
 		const p = await ask(cwd);
-		if (p.exists || !root || root === cwd) return p;
-		const r = await ask(root);
-		return r.exists ? r : p;
+		if (p.exists) return p;
+		if (root && root !== cwd) {
+			const r = await ask(root);
+			if (r.exists) return r;
+		}
+		return recorded ? { ...p, key: recorded } : p;
 	};
 	// A digest filed under a key its folder no longer has is rebuilt under the current one.
 	const rekeyed = new Set<string>();
@@ -213,8 +230,11 @@ export async function updateDigests(files: SessionFile[], P: HomePaths, log: (m:
 		8,
 		async (f) => {
 			const rec = idx[f.path];
-			const proj = await projectOf(rec.cwd, rec.root);
-			if (proj.exists && proj.key !== rec.projectKey) rekeyed.add(f.path);
+			// Filed as `local:` while its folder is gone (digested only after a worktree was removed): look up what the
+			// session recorded, once — digests made before `recordedKey` existed do not have it.
+			if (rec.recordedKey === undefined && rec.projectKey.startsWith("local:") && !existsSync(rec.cwd)) rec.recordedKey = (await scanRecordedProjectKey(f.path)) ?? "";
+			const proj = await projectOf(rec.cwd, rec.root, rec.recordedKey);
+			if (proj.exists ? proj.key !== rec.projectKey : !!rec.recordedKey && rec.projectKey.startsWith("local:") && proj.key !== rec.projectKey) rekeyed.add(f.path);
 		},
 	);
 	if (rekeyed.size) log(`digests: ${rekeyed.size} session(s) belong to another project key now`);
@@ -232,7 +252,8 @@ export async function updateDigests(files: SessionFile[], P: HomePaths, log: (m:
 				continue;
 			}
 			const prev = idx[f.path];
-			const proj = await projectOf(s.header.cwd, prev?.cwd === s.header.cwd ? prev.root : undefined);
+			const recorded = recordedProjectKey(s.branch);
+			const proj = await projectOf(s.header.cwd, prev?.cwd === s.header.cwd ? prev.root : undefined, recorded);
 			const d = buildDigest(s);
 			const dir = keyToDir(proj.key);
 			if (prev?.dir && prev.dir !== dir) {
@@ -247,6 +268,7 @@ export async function updateDigests(files: SessionFile[], P: HomePaths, log: (m:
 				projectKey: proj.key,
 				root: proj.exists ? proj.root : undefined,
 				project: proj.project,
+				recordedKey: recorded ?? "",
 				dir,
 				cwd: s.header.cwd,
 				started: s.header.timestamp,
@@ -506,7 +528,8 @@ async function newerNoteEvidence(note: Note, opEvidence: Evidence[], deps: Evide
 
 interface Verdict {
 	ref: string;
-	verdict: "supported" | "partial" | "unsupported" | "contradicted";
+	/** `documented`: the project's docs already say it — true, but not memory. */
+	verdict: "supported" | "partial" | "unsupported" | "contradicted" | "documented";
 	unsafe: boolean;
 	reason: string;
 	fix?: { title?: string; body?: string; scope?: string };
@@ -514,7 +537,7 @@ interface Verdict {
 
 export function validateVerdicts(raw: unknown): Verdict[] {
 	if (!isObj(raw) || !Array.isArray(raw.verdicts)) throw new Error('expected {"verdicts": [...]}');
-	const kinds = ["supported", "partial", "unsupported", "contradicted"];
+	const kinds = ["supported", "partial", "unsupported", "contradicted", "documented"];
 	return raw.verdicts.filter(isObj).flatMap((v) => {
 		const verdict = s(v.verdict, 20);
 		if (!s(v.ref, 40) || !kinds.includes(verdict)) return [];
@@ -600,8 +623,20 @@ async function verifyOps(
 	tag: string,
 	scopes: { project: string; other_projects: string[] },
 	startOf: StartOf,
+	repo?: { probe: RepoProbe; scope: string },
 ) {
 	const verdicts = new Map<string, Verdict>();
+	// What the checkout says about each proposal that lands in this project: the docs that may already say it, the code it names that is gone.
+	const facts = new Map<string, { repo_docs?: DocHit[]; gone?: string[] }>();
+	if (repo)
+		await Promise.all(
+			items.map(async (r) => {
+				const text = textInProject(r.op, ws, repo.scope);
+				if (!text) return;
+				const found = await repoCheck(repo.probe, text, 3);
+				if (found) facts.set(r.op.ref, { ...(found.docs.length ? { repo_docs: found.docs } : {}), ...(found.gone.length ? { gone: found.gone } : {}) });
+			}),
+		);
 	const batches: Resolved[][] = [];
 	let cur: Resolved[] = [];
 	let size = 0;
@@ -621,6 +656,7 @@ async function verifyOps(
 			scopes,
 			proposals: batch.map((r) => ({
 				...proposalForCheck(r.op, ws, startOf),
+				...facts.get(r.op.ref),
 				evidence: evidenceForPrompt(r.evidence, startOf),
 				excerpts: r.excerpts,
 				...(r.newer ? { newer_note_evidence: evidenceForPrompt(r.newer.evidence, startOf), newer_note_excerpts: r.newer.excerpts || "(transcripts not available)" } : {}),
@@ -638,7 +674,74 @@ function decide(v: Verdict | undefined): { apply: boolean; fix?: Verdict["fix"];
 	if (v.unsafe) return { apply: false, reason: `unsafe — ${v.reason}` };
 	if (v.verdict === "supported") return { apply: true, reason: v.reason };
 	if (v.verdict === "partial" && (v.fix?.title || v.fix?.body || v.fix?.scope)) return { apply: true, fix: v.fix, reason: v.reason };
+	// True but already in the repository's docs: an agent reads it there.
+	if (v.verdict === "documented") return { apply: false, reason: `documented — ${v.reason}` };
 	return { apply: false, reason: `${v.verdict} — ${v.reason}` };
+}
+
+// ── what the repository says ─────────────────────────────────────────────
+
+/** Recheck passes per dream at most: each is a curator call, and they only revisit what already waits for review. */
+const MAX_RECHECK_PASSES = 6;
+
+type NoteText = { title: string; body?: string; when?: string };
+type RepoCheck = { gone: string[]; docs: DocHit[] };
+
+/** The docs sections that say much of what a note says, and the files and code names it mentions that the repository had and has no more; undefined: neither. */
+async function repoCheck(probe: RepoProbe, n: NoteText, k = 2): Promise<RepoCheck | undefined> {
+	const gone = await probe.gone(`${n.title}\n${n.when ?? ""}\n${n.body ?? ""}`);
+	const docs = probe.docs(`${n.title} ${n.body ?? ""}`, k);
+	return gone.length || docs.length ? { gone, docs } : undefined;
+}
+
+/** `repo_check` of the active proposals (pending notes) among `notes`. */
+async function pendingChecks(probe: RepoProbe, notes: readonly Note[], pending: ReadonlySet<string>): Promise<Map<string, RepoCheck>> {
+	const out = new Map<string, RepoCheck>();
+	await Promise.all(
+		notes
+			.filter((n) => pending.has(n.id) && n.status === "active" && n.enabled)
+			.map(async (n) => {
+				const c = await repoCheck(probe, n);
+				if (c) out.set(n.id, c);
+			}),
+	);
+	return out;
+}
+
+/**
+ * The text of a note as `op` would leave it, when it lands in `scope` (the
+ * project of the pass): the only checkout a pass can look at. A proposal for
+ * global or for another project is not checked against this one.
+ */
+function textInProject(op: Op, ws: Workspace, scope: string): NoteText | undefined {
+	const cur = "id" in op ? ws.find(op.id) : undefined;
+	switch (op.op) {
+		case "add":
+			return op.scope === "project" ? { title: op.title, body: op.body, when: op.when } : undefined;
+		case "update":
+			return cur && cur.scope === scope && (!op.scope || op.scope === "project") ? { title: op.title ?? cur.title, body: op.body ?? cur.body, when: op.when ?? cur.when } : undefined;
+		case "supersede":
+			return cur && cur.scope === scope ? { title: op.replacement.title, body: op.replacement.body, when: op.replacement.when } : undefined;
+		default:
+			return undefined;
+	}
+}
+
+function loadJsonObject(path: string): Record<string, string> {
+	try {
+		const v = JSON.parse(readFileSync(path, "utf-8")) as unknown;
+		return v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, string>) : {};
+	} catch {
+		return {};
+	}
+}
+
+/** What a recheck saw of a proposal: when neither the note nor what is gone changes, the next dream does not ask again. */
+function recheckPrint(n: NoteText, c: RepoCheck): string {
+	return createHash("sha1")
+		.update(JSON.stringify([n.title, n.body ?? "", n.when ?? "", c.gone]))
+		.digest("hex")
+		.slice(0, 16);
 }
 
 // ── report items ─────────────────────────────────────────────────────────
@@ -898,13 +1001,20 @@ export async function dream(runId: string, deps: DreamDeps): Promise<DreamOutcom
 	const verifySystem = prompt("verify");
 	const ordered = [...groups.entries()].sort((a, b) => b[1].cards.length + b[1].inbox.length - (a[1].cards.length + a[1].inbox.length));
 	const votes: Array<{ id: string; effect: string }> = [];
-	for (const [key, g] of ordered) {
-		if (signal.aborted) throw new Error("dream aborted (time limit)");
+	/**
+	 * One curator pass over one project: its sessions and inbox items — or, in a recheck, none: then it only revisits
+	 * the project's proposals that wait for review, and may withdraw or update them.
+	 */
+	const curatorPass = async (key: string, g: { cards: Card[]; inbox: InboxItem[] }, opts: { recheck?: boolean; root?: string; probe?: RepoProbe } = {}): Promise<void> => {
+		const recheck = opts.recheck === true;
 		const scope = projectScope(key);
-		const knownRoot = projects.rootOf(key)?.root;
+		const knownRoot = opts.root ?? projects.rootOf(key)?.root;
 		const proj = await resolveProject(knownRoot ?? (key.startsWith("local:") ? key.slice(6) : g.cards[0] ? (digests[g.cards[0].file]?.cwd ?? "") : (g.inbox[0]?.cwd ?? "")));
 		ws.ensureScope(scope, { key, root: proj.root });
 		scopeTitles[scope] = key;
+		// What the checkout says now: its docs, searched for each candidate, and the code a proposal names that is gone.
+		const docsRoot = proj.exists ? (proj.checkout ?? proj.root) : undefined;
+		const probe = opts.probe ?? (docsRoot && existsSync(docsRoot) ? new RepoProbe(docsRoot) : undefined);
 		// Other projects these sessions worked in or that history ties the topic to.
 		const candidates = new Map<string, Set<string>>();
 		const addCandidate = (k: string, why: string) => {
@@ -932,7 +1042,8 @@ export async function dream(runId: string, deps: DreamDeps): Promise<DreamOutcom
 			learnings: c.learnings.map((l) => {
 				const hist = history(c, l, key);
 				for (const h of hist) addCandidate(h.project, "history hits");
-				return { ...l, history: hist };
+				const docs = probe?.docs(`${l.statement} ${l.details ?? ""}`) ?? [];
+				return { ...l, history: hist, ...(docs.length ? { docs } : {}) };
 			}),
 			memory_feedback: c.memoryFeedback,
 		}));
@@ -951,9 +1062,11 @@ export async function dream(runId: string, deps: DreamDeps): Promise<DreamOutcom
 		const agentsWaiting = ctxFile ? w.agentsPending.some((a) => a.repoRoot === proj.root) || agentsOps.some((a) => a.repoRoot === proj.root) : false;
 		const used = (sc: string, budget: number) => buildIndex(ws.scope(sc), sc, budget).tokens;
 		// What the repository already documents (paths and headings): the curator only gets the context file whole.
-		const docsRoot = proj.exists ? (proj.checkout ?? proj.root) : undefined;
-		const repoDocs = docsRoot && existsSync(docsRoot) ? listRepoDocs(docsRoot, { maxChars: REPO_DOCS_CHARS, exclude: ctxFile ? [ctxFile.rel] : [] }) : [];
+		const repoDocs = probe ? listRepoDocs(probe.root, { maxChars: REPO_DOCS_CHARS, exclude: ctxFile ? [ctxFile.rel] : [] }) : [];
+		// Proposals still waiting for review, against the checkout as it is now.
+		const checks = probe ? await pendingChecks(probe, ws.scope(scope), ws.pending) : new Map<string, RepoCheck>();
 		const input = {
+			...(recheck ? { recheck: true } : {}),
 			project: { key, scope: "project", root: proj.root, ...(projects.isBroad(key) ? { workspace: true } : {}) },
 			other_projects: otherProjects,
 			budgets: {
@@ -962,7 +1075,7 @@ export async function dream(runId: string, deps: DreamDeps): Promise<DreamOutcom
 			},
 			notes: {
 				global: ws.scope(GLOBAL_SCOPE).filter((n) => n.status === "active").map((n) => ({ ...noteForPrompt(n, startOf), ...pendingMark(n.id) })),
-				project: ws.scope(scope).filter((n) => n.status === "active").map((n) => ({ ...noteForPrompt(n, startOf), ...pendingMark(n.id) })),
+				project: ws.scope(scope).filter((n) => n.status === "active").map((n) => ({ ...noteForPrompt(n, startOf), ...pendingMark(n.id), ...(checks.has(n.id) ? { repo_check: checks.get(n.id) } : {}) })),
 			},
 			limits: { max_new_notes: maxNewNotes },
 			sessions: sessionsInput,
@@ -972,17 +1085,33 @@ export async function dream(runId: string, deps: DreamDeps): Promise<DreamOutcom
 			rejected_before: w.state.rejected.slice(-40),
 		};
 		const charter = `Global: ${globalCharter}\n\nThis project (${key}): ${projectCharter}`;
-		const tag = keyToDir(key).slice(0, 60);
+		const tag = `${keyToDir(key).slice(0, 60)}${recheck ? "-recheck" : ""}`;
 		const parsed = await llm.json<ParsedOps>("analyze", cfg.models.analyze, prompt("curator", { charter }), JSON.stringify(input, null, 1), parseOps, { maxTokens: 64_000, timeoutMs: 20 * MINUTE });
 		save(`curator-${tag}.json`, { input, parsed });
 		problems.push(...parsed.problems.map((p) => `${shortKey(key)}: ${p}`));
-		log(`curator ${shortKey(key)}: ${parsed.ops.length} op(s)`);
-		if (!parsed.ops.length) continue;
+		log(`curator ${shortKey(key)}${recheck ? " (recheck)" : ""}: ${parsed.ops.length} op(s)`);
+		if (!parsed.ops.length) return;
+		// A recheck brings no new evidence: it may only withdraw or update this project's proposals that wait for review.
+		const ops = recheck
+			? parsed.ops.flatMap((op): Op[] => {
+					const own = (op.op === "deprecate" || op.op === "update") && ws.pending.has(op.id) ? ws.find(op.id) : undefined;
+					if (!own || own.scope !== scope || (op.op === "update" && op.scope && op.scope !== "project")) {
+						rejected.push({ ref: op.ref, op: op.op, title: opTitle(op), reason: "a recheck (no new sessions) may only withdraw or update this project's proposals that wait for review" });
+						return [];
+					}
+					if (op.op !== "update" || op.evidence.length) return [op];
+					// The fact check reads the note's own sessions: the update must still say what they showed.
+					const evidence = own.evidence.filter((e) => isSessionEvidence(e) && e.e.length && findSessionFile(edeps, e.s)).map((e) => ({ s: e.s, e: [...e.e] }));
+					if (evidence.length) return [{ ...op, evidence }];
+					rejected.push({ ref: op.ref, op: op.op, title: opTitle(op), reason: "a recheck update needs the proposal's own sessions for the fact check, and none of them can be read" });
+					return [];
+				})
+			: parsed.ops;
 		// Withdrawing an earlier dream's proposal removes only what nothing approved: the rationale is enough, no evidence or
 		// fact check (which would drop it for want of evidence and leave the stale proposal to the user). Applied first, so
 		// an add that replaces a withdrawn proposal is not merged into it as a duplicate.
 		const toCheck: Op[] = [];
-		for (const op of parsed.ops) {
+		for (const op of ops) {
 			if (op.op !== "deprecate" || !ws.pending.has(op.id)) {
 				toCheck.push(op);
 				continue;
@@ -1016,7 +1145,7 @@ export async function dream(runId: string, deps: DreamDeps): Promise<DreamOutcom
 			if (r.newer) log(`  ${r.op.ref} ${r.op.op} ${r.op.id}: the note has ${r.newer.evidence.length} newer evidence item(s)`);
 		}
 		const scopeChoices = { project: key, other_projects: otherProjects.map((o) => o.scope.slice(8)) };
-		const verdicts = valid.length ? await verifyOps(valid, ws, llm, cfg, verifySystem, save, tag, scopeChoices, startOf) : new Map<string, Verdict>();
+		const verdicts = valid.length ? await verifyOps(valid, ws, llm, cfg, verifySystem, save, tag, scopeChoices, startOf, probe ? { probe, scope } : undefined) : new Map<string, Verdict>();
 		for (const r of valid) {
 			const v = verdicts.get(r.op.ref);
 			const d = decide(v);
@@ -1057,6 +1186,66 @@ export async function dream(runId: string, deps: DreamDeps): Promise<DreamOutcom
 				newerEvidence: r.newer?.evidence,
 			});
 		}
+	};
+	for (const [key, g] of ordered) {
+		if (signal.aborted) throw new Error("dream aborted (time limit)");
+		await curatorPass(key, g);
+	}
+
+	// 5b. rechecks. Proposals of a project no session or inbox item of this dream touched would wait as they are while
+	// its code moves on: those that name what the repository had and has no more get a pass of their own. Docs hits alone
+	// never start one (they are hints, and some match almost every project), but the pass sees them. Each finding is
+	// looked at once (`rechecks.json` remembers what a recheck saw) and a few projects per dream.
+	const recheckMemoPath = join(P.local, "rechecks.json");
+	let recheckMemo: Record<string, string> | undefined;
+	if (kind !== "review" && !signal.aborted) {
+		const memo = loadJsonObject(recheckMemoPath);
+		const passed = new Set(ordered.map(([key]) => projectScope(key)));
+		// Only what earlier dreams proposed: this dream's own proposals were just checked.
+		const earlier = new Set(w.pending.filter((id) => ws.pending.has(id)));
+		const due: Array<{ key: string; root: string; probe: RepoProbe; checks: Map<string, RepoCheck>; weight: number }> = [];
+		for (const meta of w.scopes) {
+			if (signal.aborted) break;
+			if (!meta.key || meta.id === GLOBAL_SCOPE || passed.has(meta.id) || !ws.scope(meta.id).some((n) => earlier.has(n.id))) continue;
+			const root = projects.rootOf(meta.key)?.root ?? meta.root;
+			if (!root || !existsSync(root)) continue;
+			const proj = await resolveProject(root);
+			// A folder that has another key now (it got a git remote) is not this scope's checkout any more.
+			if (!proj.exists || proj.key !== meta.key) continue;
+			const probe = new RepoProbe(proj.checkout ?? proj.root);
+			const checks = await pendingChecks(probe, ws.scope(meta.id), earlier);
+			const fresh = [...checks].filter(([id, c]) => {
+				const n = ws.find(id);
+				return n && c.gone.length > 0 && memo[id] !== recheckPrint(n, c);
+			});
+			if (fresh.length) due.push({ key: meta.key, root, probe, checks, weight: fresh.reduce((sum, [, c]) => sum + c.gone.length, 0) });
+		}
+		due.sort((a, b) => b.weight - a.weight);
+		if (due.length) log(`recheck: ${due.length} project(s) with proposals that name what their repository no longer has${due.length > MAX_RECHECK_PASSES ? ` (the first ${MAX_RECHECK_PASSES} this time)` : ""}`);
+		for (const d of due.slice(0, MAX_RECHECK_PASSES)) {
+			if (signal.aborted) {
+				log("recheck: out of time, the rest waits for the next dream");
+				break;
+			}
+			const cs = [...d.checks.values()];
+			log(`  recheck ${shortKey(d.key)}: ${cs.filter((c) => c.gone.length).length} proposal(s) name what is gone, ${cs.filter((c) => c.docs.length).length} match the docs`);
+			try {
+				await curatorPass(d.key, { cards: [], inbox: [] }, { recheck: true, root: d.root, probe: d.probe });
+			} catch (err) {
+				// A recheck only revisits what waits anyway: its failure does not cost the dream what it did before.
+				const msg = err instanceof Error ? err.message : String(err);
+				problems.push(`recheck ${shortKey(d.key)}: ${msg}`);
+				log(`  ! recheck ${shortKey(d.key)}: ${msg}`);
+				continue;
+			}
+			// What is still proposed is remembered with what is gone now: it is asked about again when either changes.
+			for (const [id, c] of await pendingChecks(d.probe, ws.scope(projectScope(d.key)), ws.pending)) {
+				const n = ws.find(id);
+				if (n && c.gone.length) memo[id] = recheckPrint(n, c);
+			}
+		}
+		// A dry run proposes nothing: what it rechecked is not settled.
+		if (due.length && kind !== "dry") recheckMemo = Object.fromEntries(Object.entries(memo).filter(([id]) => ws.pending.has(id)));
 	}
 	const voteDeltas = applyVotes(ws, votes);
 
@@ -1132,6 +1321,8 @@ export async function dream(runId: string, deps: DreamDeps): Promise<DreamOutcom
 	};
 	save("submit.json", { ...sub, report: undefined });
 	const result = await api.submit(sub);
+	// Only once the server has what the rechecks decided: a dream that fails before leaves them to be asked again.
+	if (recheckMemo) saveJson(recheckMemoPath, recheckMemo);
 	log(`${changes.length} change(s) proposed, ${rejected.length} rejected by the checks${agents.length ? `, ${agents.length} AGENTS.md proposal(s)` : ""}`);
 	return { status: sub.status, result, sessions: pending.length, cost: llm.totalCost() };
 }

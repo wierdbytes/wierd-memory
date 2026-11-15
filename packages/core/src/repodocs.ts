@@ -5,7 +5,8 @@
  * repository answers a question before it turns the answer into a note — a
  * dream that saw a session read README.md would otherwise propose README.md
  * back as memory. Paths and headings are enough to tell; contents would cost
- * tokens in every pass.
+ * tokens in every pass — what a candidate note matches in them is searched
+ * for it alone (`RepoProbe.docs`, repoprobe.ts).
  */
 
 import { type Dirent, existsSync, readdirSync, readFileSync, statSync } from "node:fs";
@@ -66,14 +67,12 @@ export function markdownHeadings(text: string, max = MAX_HEADINGS): string[] {
 }
 
 /**
- * The project's documentation as lines `path: # Title · ## Section · …`: root
- * Markdown files, documentation folders, READMEs of top-level folders and of
- * monorepo packages. Capped at `maxChars`; what does not fit is counted.
+ * The project's Markdown documentation, relative to `root`: root Markdown files
+ * (README first; the context file too), documentation folders, READMEs of
+ * top-level folders and of monorepo packages.
  */
-export function listRepoDocs(root: string, opts: RepoDocsOptions = {}): string[] {
-	const maxChars = opts.maxChars ?? 4000;
+export function repoDocFiles(root: string): string[] {
 	if (!root || !existsSync(root)) return [];
-	const skip = new Set([...CONTEXT_FILES, ...(opts.exclude ?? [])]);
 	const files: string[] = [];
 	const top = entries(root);
 	// README first: it is what a session reads first.
@@ -85,10 +84,25 @@ export function listRepoDocs(root: string, opts: RepoDocsOptions = {}): string[]
 		const subs = PACKAGE_DIRS.includes(e.name) ? entries(join(root, e.name)).filter((x) => x.isDirectory()).map((x) => `${e.name}/${x.name}`) : [e.name];
 		for (const dir of subs) for (const f of entries(join(root, dir))) if (f.isFile() && /^readme\.(md|mdx|markdown)$/i.test(f.name)) files.push(`${dir}/${f.name}`);
 	}
+	return [...new Set(files)];
+}
+
+/** A changelog's headings are versions and its text is history, not how things are. */
+export const isChangelog = (rel: string): boolean => /^changelog/i.test(rel.split("/").pop() ?? "");
+
+/**
+ * The project's documentation as lines `path: # Title · ## Section · …` (the
+ * files of `repoDocFiles` but the context file). Capped at `maxChars`; what
+ * does not fit is counted.
+ */
+export function listRepoDocs(root: string, opts: RepoDocsOptions = {}): string[] {
+	const maxChars = opts.maxChars ?? 4000;
+	const skip = new Set([...CONTEXT_FILES, ...(opts.exclude ?? [])]);
+	const files = repoDocFiles(root);
 	const out: string[] = [];
 	let used = 0;
 	let left = 0;
-	for (const rel of [...new Set(files)]) {
+	for (const rel of files) {
 		if (skip.has(rel)) continue;
 		if (left) {
 			left++;
@@ -96,7 +110,7 @@ export function listRepoDocs(root: string, opts: RepoDocsOptions = {}): string[]
 		}
 		let line = rel;
 		// A changelog's headings are versions: its path says enough.
-		if (!/^changelog/i.test(rel.split("/").pop() ?? "")) {
+		if (!isChangelog(rel)) {
 			try {
 				const path = join(root, rel);
 				if (statSync(path).size <= MAX_FILE_BYTES) {

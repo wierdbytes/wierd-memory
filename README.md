@@ -72,6 +72,7 @@ source): `pi install /path/to/wierd-memory/packages/pi`.
     runs/<run>/                   a dream: run.json, report.json, what the models saw and said
     logs/<run>.log                a dream's log
     digests/, cards/              the search corpus of past sessions, and the cheap-model cache
+    rechecks.json                 the waiting proposals dreams rechecked against their project's checkout
     worktrees/dreams/             the dreams branch, checked out
 ```
 
@@ -80,7 +81,8 @@ repository shares one memory — or `local:<repo root>` for a folder without a r
 remote later, its memory follows by itself: the server moves `scopes/projects/local__…` into the remote's scope
 (one commit, `scope local:/… → github.com/…: the folder got a git remote`; notes keep their ids and files, what is
 still proposed moves along on the dreams branch), and dreams file the folder's past sessions under the new key. This
-happens when the server starts, before every dream, and when a session starts in that folder.
+happens when the server starts, before every dream, and when a session starts in that folder. A session whose folder
+is gone by the time a dream reads it (a removed worktree) keeps the key pi-memory recorded when it started.
 
 A note:
 
@@ -196,11 +198,17 @@ pi -p --no-session --no-extensions -e <dream.childExtensions…> -e packages/pi/
 2. **Cards** (`models.cards`): what happened in each session, the user's feedback, candidate learnings with entry ids.
 3. **Curator** (`models.analyze`, per project): sees the current notes (those still waiting for you marked as
    pending), the titles of other projects' notes, the cards, older sessions that mention a candidate, inbox items,
-   the project's AGENTS.md / CLAUDE.md and a list of its other docs (Markdown files with their headings), what you
+   the project's AGENTS.md / CLAUDE.md and a list of its other docs (Markdown files with their headings), the
+   sections of those docs that match each candidate, what the project's checkout says about the proposals still
+   waiting for you (files and code names they mention that the repository had and has no more, docs that already
+   say them), what you
    rejected before and what you turned off; proposes `add` / `update` / `supersede` / `deprecate` / `confirm` /
    `skill` / `agents_md`, most important first.
 4. **Fact check** (`models.verify`): every cited entry is looked up in the raw session; an independent model checks
-   each operation against those excerpts and may narrow it or move it to the right scope.
+   each operation against those excerpts and against the checkout as it is now, and may narrow it or move it to the
+   right scope. What the project's docs already say is rejected as `documented`; a note about code that is gone, as
+   `contradicted`. "Gone" means not in the checkout now and in its git history before: a name the repository never
+   had (a tool's output, another repository, a placeholder like `thumb-NN`) is never taken for stale.
 5. **Code applies** what passed, item by item (never a rewrite), and hands the result to the server, which commits
    it to the dreams branch. The report of each dream (what it proposed and why, what the checks rejected, cost) is
    kept: `wmem dream report`, or the Dreams page.
@@ -213,6 +221,12 @@ the session ran in; global only with your word behind it or evidence from more t
 adds at most `dream.maxNewNotesPerPass` notes (the rest are dropped and listed in the report). A dream may withdraw
 an earlier dream's proposal you have not decided yet (a duplicate, wrong, below the bar): that needs only a reason,
 no evidence or fact check, since it removes nothing approved.
+
+Proposals wait while the code moves on. A project no session of a dream was about still gets a **recheck** when its
+waiting proposals name what its repository had and has no more (a type, a script, a path): a curator pass without
+sessions, which also sees the docs that say the same, and may only withdraw those proposals or update them (an
+update is fact-checked against the proposal's own sessions). Docs hits alone never start one. At most six per dream,
+the most findings first; a finding is looked at once (`.local/rechecks.json` remembers what a recheck saw).
 
 ## Settings
 
