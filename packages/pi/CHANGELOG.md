@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.1.3] - 2026-11-15
+
+### Changed
+
+- Bundled core synced with the server (dreams: docs and stale-proposal checks, sessions from removed worktrees keep their project); no change in the extension's behavior.
+
 ## [0.1.2] - 2026-11-10
 
 ### Changed
