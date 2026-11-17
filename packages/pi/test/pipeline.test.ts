@@ -4,11 +4,11 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
-import { type DreamSubmit, keyToDir, projectScope, RepoProbe, type Stage, type StageModel, type StageUsage } from "@wierd-memory/core";
+import { type DreamSubmit, keyToDir, projectScope, RepoProbe, type RepoTools, type Stage, type StageModel, type StageUsage } from "@wierd-memory/core";
 import { App } from "../../server/src/app.ts";
 import { type DreamApi, dream, type DreamLlm, loadDigestIndex, parseRunArgs } from "../pipeline.ts";
 
@@ -457,6 +457,9 @@ describe("a dream", () => {
 		const report = (await app.state.run(id))?.report;
 		expect(report?.items).toEqual([]);
 		expect(report?.rejected.map((r) => [r.ref, r.reason])).toEqual([["l1", "documented — сказано в docs/lint.md"]]);
+		// the models had the checkout's tools (and did not use them); git names the checkout by its real path
+		expect(JSON.parse(llm.calls.find((c) => c.stage === "analyze")?.user ?? "{}").repo_access).toEqual({ projects: [{ project: KEY, root: realpathSync(proj), this: true }], max_calls: 24 });
+		expect(report?.tools).toMatchObject({ analyze: { sessions: 1, calls: 0 }, verify: { sessions: 1, calls: 0 } });
 	});
 
 	it("rechecks the waiting proposals of a project no session spoke of, once per finding", async () => {
@@ -514,5 +517,101 @@ describe("a dream", () => {
 		const quiet = new RepoAware();
 		await run(quiet);
 		expect(quiet.calls).toEqual([]);
+	});
+
+	/** A curator that greps the checkout for each candidate's last word and proposes only what the repository does not say. */
+	class Reader extends RepoAware {
+		curated?: RepoInput & { repo_access?: { projects: unknown[]; max_calls: number } };
+		checked?: { repo_access?: unknown };
+		override async json<T>(stage: Stage, spec: StageModel, system: string, user: string, validate: (v: unknown) => T, opts?: { tools?: RepoTools }): Promise<T> {
+			if (stage === "verify") {
+				this.checked = JSON.parse(user);
+				await opts?.tools?.call("ls", {});
+			}
+			if (stage !== "analyze" || system.includes("left comments")) return super.json(stage, spec, system, user, validate);
+			this.calls.push({ stage, system, user });
+			const input = JSON.parse(user) as NonNullable<Reader["curated"]>;
+			this.curated = input;
+			const ops: unknown[] = [];
+			for (const s of input.sessions)
+				for (const l of s.learnings) {
+					const found = await opts?.tools?.call("grep", { pattern: l.statement.split(" ").at(-1), literal: true });
+					if (found && !found.text.startsWith("no matches")) continue;
+					ops.push({ op: "add", ref: `t${ops.length + 1}`, scope: "project", type: "procedure", title: l.statement, body: "", index: "none", rationale: found ? "grep: в репозитории этого нет" : "без проверки", evidence: [{ s: s.session, e: l.evidence }] });
+				}
+			return validate({ ops });
+		}
+	}
+
+	it("lets the curator read the checkout: what a script's comment already says is not proposed", async () => {
+		// Not Markdown, not in git: neither the docs list nor the docs search sees it.
+		mkdirSync(join(proj, "scripts"), { recursive: true });
+		writeFileSync(join(proj, "scripts", "reload.sh"), "#!/bin/sh\n# После правки мода перезапускай панель: herdr-reload, иначе она держит старый код.\nherdr-reload\n");
+		session(join(home, "sessions", "--proj--"), "01a1b2c3-0000-7000-8000-0000000000a7", proj, [
+			["abab0001", "user", "Всегда перезапускай панель командой herdr-reload"],
+			["abab0002", "user", "Всегда прогоняй миграции через migrate-db"],
+		]);
+		const before = new Set((await app.reviews.view()).items.map((i) => i.note.id));
+		const llm = new Reader();
+		const { id } = await run(llm);
+		expect(llm.curated?.repo_access?.projects).toEqual([{ project: KEY, root: realpathSync(proj), this: true }]);
+		expect(llm.checked?.repo_access).toEqual({ projects: [{ project: KEY, root: realpathSync(proj), this: true }], max_calls: 12 });
+		const report = (await app.state.run(id))?.report;
+		expect(report?.items.map((i) => [i.kind, i.title, i.why])).toEqual([["added", "Всегда прогоняй миграции через migrate-db", ["grep: в репозитории этого нет"]]]);
+		expect((await app.reviews.view()).items.filter((i) => !before.has(i.note.id)).map((i) => i.note.title)).toEqual(["Всегда прогоняй миграции через migrate-db"]);
+		// what the tools read is in the report, per stage, and in the pass's record
+		expect(report?.tools).toEqual({
+			analyze: { sessions: 1, calls: 2, outputTokens: expect.any(Number), byTool: { grep: 2 }, errors: 0, capped: 0 },
+			verify: { sessions: 1, calls: 1, outputTokens: expect.any(Number), byTool: { ls: 1 }, errors: 0, capped: 0 },
+		});
+		expect(readFileSync(join(home, "memory", ".local", "runs", id, "report.md"), "utf-8")).toContain("repository tools: curator 2 call(s) in 1 pass(es) (grep 2)");
+		const record = JSON.parse(readFileSync(join(home, "memory", ".local", "runs", id, `curator-${keyToDir(KEY).slice(0, 60)}.json`), "utf-8"));
+		expect(record.tools.map((t: { tool: string; args: { pattern: string } }) => [t.tool, t.args.pattern])).toEqual([
+			["grep", "herdr-reload"],
+			["grep", "migrate-db"],
+		]);
+		await app.reviews.reject({ all: true }, "test");
+	});
+
+	it("gives a git checkout its tools even with another repository inside it", async () => {
+		// A clone inside the project (untracked by it), where sessions ran too: the project's folder is now "broad".
+		const nested = join(proj, "inner-repo");
+		mkdirSync(nested, { recursive: true });
+		execFileSync("git", ["init", "-q"], { cwd: nested });
+		execFileSync("git", ["remote", "add", "origin", "git@github.com:o/inner.git"], { cwd: nested });
+		mkdirSync(join(home, "sessions", "--proj-inner--"), { recursive: true });
+		session(join(home, "sessions", "--proj-inner--"), "01a1b2c3-0000-7000-8000-0000000000a9", nested, [["adad0001", "user", "Всегда запускай inner-check"]]);
+		session(join(home, "sessions", "--proj--"), "01a1b2c3-0000-7000-8000-0000000000aa", proj, [["aeae0001", "user", "Всегда запускай outer-check"]]);
+		const seen: Array<{ project: { key: string; workspace?: boolean }; repo_access?: { projects: Array<{ project: string }> } }> = [];
+		const llm = new Reader();
+		const json = llm.json.bind(llm);
+		llm.json = async (stage, spec, system, user, validate, opts) => {
+			if (stage === "analyze") seen.push(JSON.parse(user));
+			return json(stage, spec, system, user, validate, opts);
+		};
+		await run(llm);
+		await app.reviews.reject({ all: true }, "test");
+		const outer = seen.find((s) => s.project.key === KEY);
+		expect(outer?.project.workspace).toBe(true);
+		expect(outer?.repo_access?.projects[0].project).toBe(KEY);
+		expect(seen.find((s) => s.project.key === "github.com/o/inner")?.repo_access?.projects[0].project).toBe("github.com/o/inner");
+		rmSync(join(home, "sessions", "--proj-inner--"), { recursive: true, force: true });
+		rmSync(nested, { recursive: true, force: true });
+	});
+
+	it("gives no tools when the config says 0 calls", async () => {
+		session(join(home, "sessions", "--proj--"), "01a1b2c3-0000-7000-8000-0000000000a8", proj, [["acac0001", "user", "Всегда собирай релиз через make-release"]]);
+		const rt = { ...app.cfg.dream.repoTools };
+		app.cfg.dream.repoTools = { ...rt, curatorCalls: 0, verifyCalls: 0 };
+		try {
+			const llm = new Reader();
+			const { id } = await run(llm);
+			expect(llm.curated?.repo_access).toBeUndefined();
+			expect(llm.checked?.repo_access).toBeUndefined();
+			expect((await app.state.run(id))?.report?.tools).toBeUndefined();
+			expect((await app.state.run(id))?.report?.items.map((i) => i.why)).toEqual([["без проверки"]]);
+		} finally {
+			app.cfg.dream.repoTools = rt;
+		}
 	});
 });

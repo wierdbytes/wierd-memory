@@ -203,11 +203,13 @@ pi -p --no-session --no-extensions -e <dream.childExtensions…> -e packages/pi/
    waiting for you (files and code names they mention that the repository had and has no more, docs that already
    say them), what you
    rejected before and what you turned off; proposes `add` / `update` / `supersede` / `deprecate` / `confirm` /
-   `skill` / `agents_md`, most important first.
+   `skill` / `agents_md`, most important first. Before it proposes, it reads the project's checkout itself (below,
+   **Reading the repository**): whether a script's header, a code comment, some other file or a commit message already
+   says it, whether the code it names is still there and still works that way.
 4. **Fact check** (`models.verify`): every cited entry is looked up in the raw session; an independent model checks
    each operation against those excerpts and against the checkout as it is now, and may narrow it or move it to the
-   right scope. What the project's docs already say is rejected as `documented`; a note about code that is gone, as
-   `contradicted`. "Gone" means not in the checkout now and in its git history before: a name the repository never
+   right scope; it may read the checkout too. What the repository already says is rejected as `documented`; a note
+   about code that is gone, as `contradicted`. "Gone" means not in the checkout now and in its git history before: a name the repository never
    had (a tool's output, another repository, a placeholder like `thumb-NN`) is never taken for stale.
 5. **Code applies** what passed, item by item (never a rewrite), and hands the result to the server, which commits
    it to the dreams branch. The report of each dream (what it proposed and why, what the checks rejected, cost) is
@@ -228,6 +230,19 @@ sessions, which also sees the docs that say the same, and may only withdraw thos
 update is fact-checked against the proposal's own sessions). Docs hits alone never start one. At most six per dream,
 the most findings first; a finding is looked at once (`.local/rechecks.json` remembers what a recheck saw).
 
+**Reading the repository.** The curator and the fact check get read-only tools over the checkout of the project they
+work on: `read` (a file, by lines), `grep` (ripgrep; `git grep` when rg is missing), `find`, `ls`, `git_log` (also
+`-S`: when and why a name went away; a removed path's history) and `git_show` (a commit's message and files, or one
+file's change in it). They see every file of the project — untracked ones too; searches skip binaries, dependencies,
+`.git` and what `.gitignore` excludes unless asked (`all`), `read` takes any text file. Paths stay inside the project:
+`..`, absolute paths elsewhere, symlinks that lead out and `.git` itself are refused; nothing writes, there is no
+shell or network, and credentials in what they read are redacted. The checkouts of the other projects a pass is shown
+are readable too (`dream.repoTools.otherProjects`): a note may belong there. A project whose folder is gone, your
+home folder, or a workspace folder above many projects that is not a git checkout itself gets no tools. Every curator pass and every fact-check batch has a budget of
+calls and of output (`dream.repoTools`); the report shows per stage how many calls, which tools, how much they read and
+what the model rounds after their results cost. The cheap checks above (docs hits, "gone") stay: they start the
+rechecks and are a starting point the tools confirm. Expect a curator pass to cost a few tens of cents more with them.
+
 ## Settings
 
 `~/.wierd-memory/config.json` (or the Settings page, or `wmem config <key> <value>`):
@@ -245,6 +260,7 @@ the most findings first; a finding is looked at once (`.local/rechecks.json` rem
 | `schedule` | `{ enabled: false, minHoursBetween: 20, minNewSessions: 3 }` | when the server dreams on its own |
 | `dream.maxSessionsPerRun` · `minIdleMinutes` · `concurrency` · `maxRuntimeMinutes` | `60` · `30` · `4` · `180` | |
 | `dream.maxNewNotesPerPass` | `3` | new notes one curator pass (one project of a dream) may propose |
+| `dream.repoTools` | `{ curatorCalls: 24, verifyCalls: 12, outputTokens: 40000, otherProjects: true }` | read-only repository tools: calls per curator pass and per fact-check batch (0: none), tool output one of them may read, other projects' checkouts too |
 | `dream.childExtensions` | `["npm:@wierdbytes/pi-anthropic"]` | extensions the dream process loads |
 | `dream.piCommand` | `pi` | |
 | `budgets.globalTokens` / `projectTokens` | `1000` / `1500` | index budgets |

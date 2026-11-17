@@ -23,6 +23,10 @@ packages/core/src/      shared, no dependencies, no pi imports (runs under bun, 
                         mentions that are gone: not in the checkout (`git grep`) but in its history (`git log -S`,
                         `git log -- <path>`). Conservative: never seen, unsure or timed out is "not gone". The
                         curator's "docs" / "repo_check", the fact check's "repo_docs" / "gone"
+  repotools.ts          RepoTools: read-only tools over checkouts for the curator and the fact check (read, grep — rg or
+                        `git grep --no-index` —, find, ls, git_log, git_show). Paths confined to the given roots (no
+                        `..`, no symlink out, no `.git`), output scrubbed of secrets, a budget of calls and characters
+                        per pass / batch (`dream.repoTools`); a refusal or failure is a result the model reads, never a throw
   digest.ts sessions.ts project(s).ts search.ts secrets.ts prompts.ts schedule.ts report.ts config.ts layout.ts
 packages/server/src/
   git.ts                Repo: the memory repository — the dreams branch's worktree, commits, history, the remote
@@ -39,7 +43,8 @@ packages/server/src/
   http.ts               routes (keep docs/api.md and core/api.ts in step with it)
   cli.ts serve.ts       `wmem`
 packages/web/           React UI, bundled by Bun's HTML import (no other build tooling); `import type` from core only
-packages/pi/            the pi extension (index.ts) and the dream (runner.ts → pipeline.ts, llm.ts)
+packages/pi/            the pi extension (index.ts) and the dream (runner.ts → pipeline.ts, llm.ts: model calls through
+                        pi's registry; with RepoTools a tool loop in the dream's process, its rounds tallied as toolCost)
                         package.json is the private development manifest; npm gets dist/ (below)
 packages/herdr-mod/     the Herdr panel (JavaScript for gpui-kit; installed by `wmem herdr install`)
 scripts/seed-review.ts  a made-up dream for a sandbox server

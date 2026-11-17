@@ -11,6 +11,7 @@ export * from "./projects.ts";
 export * from "./prompts.ts";
 export * from "./repodocs.ts";
 export * from "./repoprobe.ts";
+export * from "./repotools.ts";
 export * from "./report.ts";
 export * from "./schedule.ts";
 export * from "./search.ts";

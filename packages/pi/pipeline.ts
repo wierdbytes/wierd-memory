@@ -15,7 +15,10 @@
  *    same); withdrawals of earlier proposals apply at once, adds past
  *    `dream.maxNewNotesPerPass` are dropped; cited evidence is looked up in
  *    the raw sessions; an independent model checks every other operation
- *    against it and against the checkout
+ *    against it and against the checkout. Both models may read the checkout
+ *    themselves with read-only tools (core/repotools.ts: read, grep, find, ls,
+ *    git log / show) within `dream.repoTools`: whether the repository already
+ *    says it, whether the code is still like that
  *    5b. projects without a pass whose waiting proposals name code their
  *    repository had and has no more get a recheck pass: it may only withdraw
  *    or update them
@@ -63,6 +66,9 @@ import {
 	keyToDir,
 	listRepoDocs,
 	RepoProbe,
+	type RepoRoot,
+	RepoTools,
+	repoToolsRoot,
 	listSessionFiles,
 	type Note,
 	type Op,
@@ -95,6 +101,7 @@ import {
 	type StageUsage,
 	systemPrompt,
 	today,
+	type ToolUsage,
 	type WmemConfig,
 	Workspace,
 } from "@wierd-memory/core";
@@ -109,7 +116,19 @@ const REPO_DOCS_CHARS = 4000;
 export interface DreamLlm {
 	readonly usage: Partial<Record<Stage, StageUsage>>;
 	totalCost(): number;
-	json<T>(stage: Stage, spec: StageModel, system: string, user: string, validate: (v: unknown) => T, opts: { maxTokens: number; timeoutMs: number }): Promise<T>;
+	/** With `tools` the model may call them before it answers (a tool loop); their budget is theirs to keep. */
+	json<T>(stage: Stage, spec: StageModel, system: string, user: string, validate: (v: unknown) => T, opts: { maxTokens: number; timeoutMs: number; tools?: RepoTools }): Promise<T>;
+}
+
+/** Repository tools for one curator pass or fact-check batch: a fresh budget each, what they used goes to the report. */
+interface ToolAccess {
+	open(): RepoTools | undefined;
+	done(tools: RepoTools): void;
+}
+
+/** What the model is told about the tools it has: which checkouts, how many calls. */
+function repoAccessInput(tools: RepoTools, own: string) {
+	return { projects: tools.projects.map((p) => ({ ...p, ...(p.project === own ? { this: true } : {}) })), max_calls: tools.limits.maxCalls };
 }
 
 /** The server, as the dream needs it. */
@@ -624,6 +643,7 @@ async function verifyOps(
 	scopes: { project: string; other_projects: string[] },
 	startOf: StartOf,
 	repo?: { probe: RepoProbe; scope: string },
+	access?: ToolAccess,
 ) {
 	const verdicts = new Map<string, Verdict>();
 	// What the checkout says about each proposal that lands in this project: the docs that may already say it, the code it names that is gone.
@@ -652,8 +672,10 @@ async function verifyOps(
 	}
 	if (cur.length) batches.push(cur);
 	for (const [i, batch] of batches.entries()) {
+		const tools = access?.open();
 		const input = {
 			scopes,
+			...(tools ? { repo_access: repoAccessInput(tools, scopes.project) } : {}),
 			proposals: batch.map((r) => ({
 				...proposalForCheck(r.op, ws, startOf),
 				...facts.get(r.op.ref),
@@ -662,8 +684,13 @@ async function verifyOps(
 				...(r.newer ? { newer_note_evidence: evidenceForPrompt(r.newer.evidence, startOf), newer_note_excerpts: r.newer.excerpts || "(transcripts not available)" } : {}),
 			})),
 		};
-		const out = await llm.json("verify", cfg.models.verify, prompt, JSON.stringify(input, null, 1), validateVerdicts, { maxTokens: 32_000, timeoutMs: 12 * MINUTE });
-		save(`verify-${tag}-${i + 1}.json`, { input, out });
+		let out: Verdict[];
+		try {
+			out = await llm.json("verify", cfg.models.verify, prompt, JSON.stringify(input, null, 1), validateVerdicts, { maxTokens: 32_000, timeoutMs: 12 * MINUTE, tools });
+		} finally {
+			if (tools) access?.done(tools);
+		}
+		save(`verify-${tag}-${i + 1}.json`, { input, out, ...(tools ? { tools: tools.trace } : {}) });
 		for (const v of out) verdicts.set(v.ref, v);
 	}
 	return verdicts;
@@ -999,6 +1026,32 @@ export async function dream(runId: string, deps: DreamDeps): Promise<DreamOutcom
 		return { keys, explicit };
 	};
 	const verifySystem = prompt("verify");
+	// Repository tools: every curator pass and every fact-check batch gets a budget of its own; the report adds them up.
+	const toolUsage: Partial<Record<Stage, ToolUsage>> = {};
+	const toolAccess = (stage: "analyze" | "verify", roots: RepoRoot[], what: string): ToolAccess | undefined => {
+		const rt = cfg.dream.repoTools;
+		const maxCalls = stage === "analyze" ? rt.curatorCalls : rt.verifyCalls;
+		if (!roots.length || maxCalls <= 0) return undefined;
+		return {
+			open: () => {
+				try {
+					return new RepoTools(roots, { maxCalls, maxOutputChars: rt.outputTokens * 4 }, { log: (line) => log(`  ${stage === "verify" ? "check" : "curator"} ${what} · ${line}`) });
+				} catch {
+					// the folder went away meanwhile: as without tools
+					return undefined;
+				}
+			},
+			done: (t) => {
+				const u = (toolUsage[stage] ??= { sessions: 0, calls: 0, outputTokens: 0, byTool: {}, errors: 0, capped: 0 });
+				u.sessions++;
+				u.calls += t.stats.calls;
+				u.outputTokens += Math.round(t.stats.outputChars / 4);
+				u.errors += t.stats.errors;
+				if (t.stats.capped) u.capped++;
+				for (const [name, n] of Object.entries(t.stats.byTool)) u.byTool[name] = (u.byTool[name] ?? 0) + n;
+			},
+		};
+	};
 	const ordered = [...groups.entries()].sort((a, b) => b[1].cards.length + b[1].inbox.length - (a[1].cards.length + a[1].inbox.length));
 	const votes: Array<{ id: string; effect: string }> = [];
 	/**
@@ -1056,6 +1109,24 @@ export async function dream(runId: string, deps: DreamDeps): Promise<DreamOutcom
 			return { scope: `project:${k}`, why: [...why], notes: active.slice(0, OTHER_PROJECT_TITLES).map((n) => ({ id: n.id, title: n.title, ...pendingMark(n.id) })) };
 		});
 		for (const c of g.cards) for (const f of c.memoryFeedback) votes.push({ id: f.id, effect: f.effect });
+		// The checkouts the models may read: this project's — a git checkout (a repository with another one inside is still
+		// itself), or a project folder that is not a workspace above many projects; not one that is gone — and with it
+		// those of the other projects shown, where a note may belong. Without its own, none: as before.
+		const ownRoot = docsRoot && (proj.git || (proj.project && !projects.isBroad(key))) ? repoToolsRoot(docsRoot) : undefined;
+		const toolRoots: RepoRoot[] = ownRoot
+			? [
+					{ name: key, root: ownRoot },
+					...(cfg.dream.repoTools.otherProjects
+						? otherProjects.flatMap((o) => {
+								const k = o.scope.slice("project:".length);
+								const root = repoToolsRoot(projects.rootOf(k)?.root);
+								return root && root !== ownRoot ? [{ name: k, root }] : [];
+							})
+						: []),
+				]
+			: [];
+		const curatorTools = toolAccess("analyze", toolRoots, shortKey(key));
+		const tools = curatorTools?.open();
 		const projectCharter = charterOf.get(scope) || defaultProjectCharter;
 		const ctxFile = cfg.agentsMd && proj.exists ? findContextFile(proj.checkout ?? proj.root) : undefined;
 		// One AGENTS.md proposal at a time: while one awaits review, do not stack another.
@@ -1081,15 +1152,21 @@ export async function dream(runId: string, deps: DreamDeps): Promise<DreamOutcom
 			sessions: sessionsInput,
 			inbox: g.inbox.map((i) => ({ s: `inbox:${i.id}`, at: i.ts, source: i.source, kind: i.kind, scope: i.scope, text: i.text })),
 			repo_docs: repoDocs.length ? repoDocs : null,
+			...(tools ? { repo_access: repoAccessInput(tools, key) } : {}),
 			context_file: ctxFile ? { path: ctxFile.rel, content: clipHead(readFileSync(ctxFile.path, "utf-8"), 40_000), ...(agentsWaiting ? { pending: true } : {}) } : null,
 			rejected_before: w.state.rejected.slice(-40),
 		};
 		const charter = `Global: ${globalCharter}\n\nThis project (${key}): ${projectCharter}`;
 		const tag = `${keyToDir(key).slice(0, 60)}${recheck ? "-recheck" : ""}`;
-		const parsed = await llm.json<ParsedOps>("analyze", cfg.models.analyze, prompt("curator", { charter }), JSON.stringify(input, null, 1), parseOps, { maxTokens: 64_000, timeoutMs: 20 * MINUTE });
-		save(`curator-${tag}.json`, { input, parsed });
+		let parsed: ParsedOps;
+		try {
+			parsed = await llm.json<ParsedOps>("analyze", cfg.models.analyze, prompt("curator", { charter }), JSON.stringify(input, null, 1), parseOps, { maxTokens: 64_000, timeoutMs: 20 * MINUTE, tools });
+		} finally {
+			if (tools) curatorTools?.done(tools);
+		}
+		save(`curator-${tag}.json`, { input, parsed, ...(tools ? { tools: tools.trace } : {}) });
 		problems.push(...parsed.problems.map((p) => `${shortKey(key)}: ${p}`));
-		log(`curator ${shortKey(key)}${recheck ? " (recheck)" : ""}: ${parsed.ops.length} op(s)`);
+		log(`curator ${shortKey(key)}${recheck ? " (recheck)" : ""}: ${parsed.ops.length} op(s)${tools ? ` · ${tools.stats.calls} tool call(s)` : ""}`);
 		if (!parsed.ops.length) return;
 		// A recheck brings no new evidence: it may only withdraw or update this project's proposals that wait for review.
 		const ops = recheck
@@ -1145,7 +1222,7 @@ export async function dream(runId: string, deps: DreamDeps): Promise<DreamOutcom
 			if (r.newer) log(`  ${r.op.ref} ${r.op.op} ${r.op.id}: the note has ${r.newer.evidence.length} newer evidence item(s)`);
 		}
 		const scopeChoices = { project: key, other_projects: otherProjects.map((o) => o.scope.slice(8)) };
-		const verdicts = valid.length ? await verifyOps(valid, ws, llm, cfg, verifySystem, save, tag, scopeChoices, startOf, probe ? { probe, scope } : undefined) : new Map<string, Verdict>();
+		const verdicts = valid.length ? await verifyOps(valid, ws, llm, cfg, verifySystem, save, tag, scopeChoices, startOf, probe ? { probe, scope } : undefined, toolAccess("verify", toolRoots, shortKey(key))) : new Map<string, Verdict>();
 		for (const r of valid) {
 			const v = verdicts.get(r.op.ref);
 			const d = decide(v);
@@ -1287,6 +1364,7 @@ export async function dream(runId: string, deps: DreamDeps): Promise<DreamOutcom
 		language: cfg.language,
 		models: { cards: cfg.models.cards.model, analyze: cfg.models.analyze.model, verify: cfg.models.verify.model },
 		usage: llm.usage,
+		...(Object.keys(toolUsage).length ? { tools: toolUsage } : {}),
 		sessions: reportSessions,
 		sessionTitles: Object.fromEntries(Object.entries(sessionTitles).filter(([id]) => mentioned.has(id))),
 		inbox: inbox.length,

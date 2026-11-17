@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.1.4] - 2026-11-17
+
+### Changed
+
+- Bundled core synced with the server (dream setting `dream.repoTools`, curator and fact-check prompts); no change in the extension's behavior.
+
 ## [0.1.3] - 2026-11-15
 
 ### Changed

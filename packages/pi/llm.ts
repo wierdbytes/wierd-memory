@@ -6,15 +6,32 @@
  * model its own answer with the error and asks again (3 attempts). Transient
  * provider errors are retried with backoff. Usage and cost are tallied per
  * stage for the report.
+ *
+ * With `tools` (the read-only repository tools, core/repotools.ts) the call is
+ * a tool loop in this process: the model may read the checkout before it
+ * answers, the tools enforce their own budget, and the calls that go on after
+ * tool results are tallied apart (`toolRounds`, `toolCost`).
  */
 
-import type { Api, AssistantMessage, Message, Model } from "@earendil-works/pi-ai";
+import type { Api, AssistantMessage, Message, Model, Tool, ToolCall } from "@earendil-works/pi-ai";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import type { Stage, StageModel, StageUsage } from "@wierd-memory/core";
+import type { RepoTools, Stage, StageModel, StageUsage } from "@wierd-memory/core";
 
 export interface CallOptions {
 	maxTokens: number;
 	timeoutMs: number;
+}
+
+export interface JsonOptions extends CallOptions {
+	/** Read-only tools the model may call before it answers; the budget is theirs. */
+	tools?: RepoTools;
+}
+
+/** One request: the tools declared, whether the model may call them, whether it follows tool results. */
+interface Turn {
+	tools?: Tool[];
+	toolChoice?: "auto" | "none";
+	afterTools?: boolean;
 }
 
 /** Pull a JSON value out of a model reply (bare, fenced, or embedded in prose). */
@@ -78,7 +95,7 @@ export class Llm {
 		return Object.values(this.usage).reduce((s, u) => s + (u?.cost ?? 0), 0);
 	}
 
-	async complete(stage: Stage, spec: StageModel, system: string, messages: Message[], opts: CallOptions): Promise<AssistantMessage> {
+	async complete(stage: Stage, spec: StageModel, system: string, messages: Message[], opts: CallOptions, turn: Turn = {}): Promise<AssistantMessage> {
 		const model = this.resolve(spec);
 		const reasoning = model.reasoning && spec.thinking !== "off" ? spec.thinking : undefined;
 		const u = (this.usage[stage] ??= { calls: 0, input: 0, output: 0, cacheRead: 0, cost: 0, failures: 0 });
@@ -90,8 +107,8 @@ export class Llm {
 			try {
 				const stream = this.ctx.modelRegistry.streamSimple(
 					model,
-					{ systemPrompt: system, messages },
-					{ signal: AbortSignal.any(signals), maxTokens: opts.maxTokens, ...(reasoning ? { reasoning } : {}) },
+					{ systemPrompt: system, messages, ...(turn.tools ? { tools: turn.tools } : {}) },
+					{ signal: AbortSignal.any(signals), maxTokens: opts.maxTokens, ...(reasoning ? { reasoning } : {}), ...(turn.toolChoice ? { toolChoice: turn.toolChoice } : {}) },
 				);
 				const msg = await stream.result();
 				u.calls++;
@@ -99,6 +116,10 @@ export class Llm {
 				u.output += msg.usage?.output ?? 0;
 				u.cacheRead += msg.usage?.cacheRead ?? 0;
 				u.cost += msg.usage?.cost?.total ?? 0;
+				if (turn.afterTools) {
+					u.toolRounds = (u.toolRounds ?? 0) + 1;
+					u.toolCost = (u.toolCost ?? 0) + (msg.usage?.cost?.total ?? 0);
+				}
 				if (msg.stopReason === "error" || msg.stopReason === "aborted") throw new Error(msg.errorMessage || msg.stopReason);
 				return msg;
 			} catch (err) {
@@ -113,11 +134,37 @@ export class Llm {
 		throw new Error(`${stage} (${spec.model}): ${lastErr}`);
 	}
 
-	async json<T>(stage: Stage, spec: StageModel, system: string, user: string, validate: (v: unknown) => T, opts: CallOptions): Promise<T> {
+	async json<T>(stage: Stage, spec: StageModel, system: string, user: string, validate: (v: unknown) => T, opts: JsonOptions): Promise<T> {
 		const messages: Message[] = [{ role: "user", content: user, timestamp: Date.now() }];
+		const tools = opts.tools;
+		const started = Date.now();
 		let lastErr = "";
-		for (let attempt = 0; attempt < 3; attempt++) {
-			const msg = await this.complete(stage, spec, system, messages, opts);
+		let rounds = 0;
+		let afterTools = false;
+		for (let attempt = 0; attempt < 3; ) {
+			// Past the tools' budget, or half the stage's time, the model has to answer. The tools stay declared: a provider
+			// refuses a conversation with tool calls in it and no tools.
+			const open = !!tools && tools.left() > 0 && Date.now() - started < opts.timeoutMs / 2;
+			const msg = await this.complete(stage, spec, system, messages, opts, tools ? { tools: tools.defs, toolChoice: open ? "auto" : "none", afterTools } : {});
+			afterTools = false;
+			const calls = msg.content.filter((c): c is ToolCall => c.type === "toolCall");
+			if (calls.length && tools) {
+				// Every round answers at least one call and the tools refuse past their limit: a model that keeps asking anyway is stopped.
+				if (++rounds > tools.limits.maxCalls + 3) throw new Error(`${stage}: the model kept calling tools after their limit`);
+				messages.push(msg);
+				for (const c of calls) {
+					if (this.signal?.aborted) throw new Error("dream aborted (time limit)");
+					const r = !open
+						? { text: "Refused: no more tool calls in this pass. Reply with your answer now.", isError: true }
+						: c.argumentsError
+							? { text: `Error: ${c.argumentsError}`, isError: true }
+							: await tools.call(c.name, c.arguments);
+					messages.push({ role: "toolResult", toolCallId: c.id, toolName: c.name, content: [{ type: "text", text: r.text }], isError: r.isError, timestamp: Date.now() });
+				}
+				afterTools = true;
+				continue;
+			}
+			attempt++;
 			try {
 				return validate(extractJson(replyText(msg)));
 			} catch (err) {

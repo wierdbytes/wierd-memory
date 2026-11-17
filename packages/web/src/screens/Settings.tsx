@@ -132,6 +132,16 @@ export function SettingsScreen() {
 						onBlur={() => set("dream", { ...draft.dream, childExtensions: draft.dream.childExtensions.map((x) => x.trim()).filter(Boolean) })}
 					/>
 				</Field>
+				<h3>Repository tools</h3>
+				<p className="dim">
+					The curator and the fact check may read the checkout of the project they work on (and of the other projects they are shown) with read-only tools — read, grep, find, ls, git log / show — to see whether the repository already says a note and whether the code is still like that. Every curator pass and every fact-check batch has its own budget; 0 calls: that stage goes without.
+				</p>
+				<div className="form-row">
+					<Num label="Calls per curator pass" value={draft.dream.repoTools.curatorCalls} min={0} max={200} onChange={(v) => set("dream", { ...draft.dream, repoTools: { ...draft.dream.repoTools, curatorCalls: v } })} />
+					<Num label="Calls per fact-check batch" hint="up to 10 proposals" value={draft.dream.repoTools.verifyCalls} min={0} max={200} onChange={(v) => set("dream", { ...draft.dream, repoTools: { ...draft.dream.repoTools, verifyCalls: v } })} />
+					<Num label="Tool output per pass, tokens" hint="what one pass or batch may read" value={draft.dream.repoTools.outputTokens} min={1000} onChange={(v) => set("dream", { ...draft.dream, repoTools: { ...draft.dream.repoTools, outputTokens: v } })} />
+				</div>
+				<Check label="Also the other projects' checkouts" hint="the projects a pass is shown, where a note may belong" checked={draft.dream.repoTools.otherProjects} onChange={(v) => set("dream", { ...draft.dream, repoTools: { ...draft.dream.repoTools, otherProjects: v } })} />
 			</Group>
 
 			<Group title="Git repository">

@@ -16,6 +16,23 @@ export interface StageUsage {
 	cacheRead: number;
 	cost: number;
 	failures: number;
+	/** Model calls that went on after repository tool results, and their cost: what the tools cost in model time. */
+	toolRounds?: number;
+	toolCost?: number;
+}
+
+/** The repository tools (repotools.ts) of one stage, over a whole dream. */
+export interface ToolUsage {
+	/** Passes (curator) or batches (fact check) that had them. */
+	sessions: number;
+	calls: number;
+	/** Tool output the model read, in tokens (≈ characters / 4). */
+	outputTokens: number;
+	byTool: Record<string, number>;
+	/** Calls that failed: a missing file, a bad pattern, a path outside the project. */
+	errors: number;
+	/** Sessions that reached a limit. */
+	capped: number;
 }
 
 export interface ReportSession {
@@ -81,6 +98,8 @@ export interface ReportData {
 	language: string;
 	models: Record<Stage, string>;
 	usage: Partial<Record<Stage, StageUsage>>;
+	/** What the curator and the fact check read of the checkouts. */
+	tools?: Partial<Record<Stage, ToolUsage>>;
 	sessions: ReportSession[];
 	sessionTitles: Record<string, string>;
 	inbox: number;
@@ -130,6 +149,26 @@ function money(n: number): string {
 // `removed` in a dream's report is always a proposal withdrawn before anyone approved it.
 const ICON: Record<string, string> = { added: "+", updated: "~", moved: "→", superseded: "⇄", deprecated: "−", removed: "✖", confirmed: "✓", merged: "✓", skill: "§" };
 
+const STAGE_LABEL: Record<Stage, string> = { cards: "cards", analyze: "curator", verify: "fact check" };
+
+/** `curator 18 calls in 3 passes (grep 9, read 7, git_log 2) · ~22k tokens read · $0.41 in 11 rounds` per stage; "" without tools. */
+export function toolsLabel(d: Pick<ReportData, "tools" | "usage">): string {
+	const parts: string[] = [];
+	for (const [stage, t] of Object.entries(d.tools ?? {}) as Array<[Stage, ToolUsage]>) {
+		if (!t?.sessions) continue;
+		const by = Object.entries(t.byTool)
+			.sort((a, b) => b[1] - a[1])
+			.map(([name, n]) => `${name} ${n}`)
+			.join(", ");
+		const u = d.usage[stage];
+		const what = stage === "verify" ? "batch" : "pass";
+		const cost = u?.toolRounds ? ` · ${money(u.toolCost ?? 0)} in ${u.toolRounds} round(s)` : "";
+		const capped = t.capped ? ` · ${t.capped} hit the limit` : "";
+		parts.push(`${STAGE_LABEL[stage]} ${t.calls} call(s) in ${t.sessions} ${what}(es)${by ? ` (${by})` : ""} · ~${t.outputTokens >= 1000 ? `${Math.round(t.outputTokens / 1000)}k` : t.outputTokens} tokens read${cost}${capped}`);
+	}
+	return parts.join("; ");
+}
+
 /** A dream's report as plain Markdown (for the CLI and for reading in a terminal). */
 export function renderReport(d: ReportData): string {
 	const out: string[] = [`# ${runTitle(d)}`, "", `run ${d.runId} · sessions ${d.sessions.length} · inbox ${d.inbox} · review comments ${d.feedback} · ${money(totalCost(d.usage))}`, ""];
@@ -170,6 +209,8 @@ export function renderReport(d: ReportData): string {
 	const usage = (Object.entries(d.usage) as Array<[Stage, StageUsage]>).map(([stage, u]) => `${stage} ${money(u.cost)} (${u.calls}×)`).join(", ");
 	out.push(`models: cards \`${d.models.cards}\`, curator \`${d.models.analyze}\`, check \`${d.models.verify}\``);
 	if (usage) out.push(`cost: ${usage}`);
+	const tools = toolsLabel(d);
+	if (tools) out.push(`repository tools: ${tools}`);
 	if (d.problems.length) out.push("", "diagnostics:", ...d.problems.map((p) => `- ${p}`));
 	return `${out.join("\n")}\n`;
 }

@@ -68,6 +68,13 @@ export interface WmemConfig {
 		 */
 		maxNewNotesPerPass: number;
 		/**
+		 * Read-only tools over a project's checkout (read, grep, find, ls, git
+		 * log / show) for the curator and the fact check, so that they see what
+		 * the repository already says and whether the code is still like that.
+		 * Each pass or batch has its own budget; 0 calls: that stage goes without.
+		 */
+		repoTools: RepoToolsConfig;
+		/**
 		 * Extensions loaded into the headless pi that dreams (it runs with
 		 * `--no-extensions`). Use it for provider/auth extensions. `npm:<name>`
 		 * resolves to pi's installed copy; missing entries are skipped.
@@ -84,6 +91,17 @@ export interface WmemConfig {
 	};
 	/** Let dreams propose AGENTS.md / CLAUDE.md edits (reviewed like notes, applied to the working copy). */
 	agentsMd: boolean;
+}
+
+export interface RepoToolsConfig {
+	/** Tool calls per curator pass (one project of a dream). */
+	curatorCalls: number;
+	/** Tool calls per fact-check batch (up to 10 proposals). */
+	verifyCalls: number;
+	/** Tool output one pass or batch may read, in tokens (≈ 4 characters each). */
+	outputTokens: number;
+	/** The checkouts of the other projects a pass is shown are readable too: a note may belong there. */
+	otherProjects: boolean;
 }
 
 export function defaults(): WmemConfig {
@@ -105,6 +123,7 @@ export function defaults(): WmemConfig {
 			concurrency: 4,
 			maxRuntimeMinutes: 180,
 			maxNewNotesPerPass: 3,
+			repoTools: { curatorCalls: 24, verifyCalls: 12, outputTokens: 40_000, otherProjects: true },
 			childExtensions: ["npm:@wierdbytes/pi-anthropic"],
 			piCommand: "pi",
 		},
@@ -125,6 +144,16 @@ function stageModel(raw: unknown, fallback: StageModel): StageModel {
 	const model = typeof raw.model === "string" && raw.model.includes("/") ? raw.model.trim() : fallback.model;
 	const thinking = oneOf(THINKING_LEVELS, raw.thinking) ? raw.thinking : fallback.thinking;
 	return { model, thinking };
+}
+
+function repoTools(raw: unknown, d: RepoToolsConfig): RepoToolsConfig {
+	if (!isObj(raw)) return { ...d };
+	return {
+		curatorCalls: Math.round(num(raw.curatorCalls, 0, 200, d.curatorCalls)),
+		verifyCalls: Math.round(num(raw.verifyCalls, 0, 200, d.verifyCalls)),
+		outputTokens: Math.round(num(raw.outputTokens, 1000, 500_000, d.outputTokens)),
+		otherProjects: bool(raw.otherProjects, d.otherProjects),
+	};
 }
 
 export function sanitize(raw: unknown): WmemConfig {
@@ -167,6 +196,7 @@ export function sanitize(raw: unknown): WmemConfig {
 			concurrency: Math.round(num(s.concurrency, 1, 16, d.dream.concurrency)),
 			maxRuntimeMinutes: num(s.maxRuntimeMinutes, 5, 24 * 60, d.dream.maxRuntimeMinutes),
 			maxNewNotesPerPass: Math.round(num(s.maxNewNotesPerPass, 1, 50, d.dream.maxNewNotesPerPass)),
+			repoTools: repoTools(s.repoTools, d.dream.repoTools),
 			childExtensions: Array.isArray(s.childExtensions) ? s.childExtensions.filter((x): x is string => typeof x === "string" && !!x.trim()) : d.dream.childExtensions,
 			piCommand: str(s.piCommand, d.dream.piCommand),
 		};
