@@ -3,7 +3,10 @@
  *
  * Descriptions say what memory is for, not how to use it — the model judges
  * what is worth looking up or keeping. memory_inbox never writes memory
- * directly: items wait for the next dream and the user's review.
+ * directly: items wait for the next dream and the user's review. Its guideline
+ * rules out what the review kept rejecting when dreams proposed it from the
+ * inbox: what the agent had just written into the repository itself, and a
+ * cause it had not verified. Every word of it is in every session's prompt.
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -60,7 +63,7 @@ export function registerTools(pi: ExtensionAPI, rt: Runtime): void {
 			"Keep something for this user's future sessions. Items go to the memory inbox: the next dream reviews them offline with the session evidence and proposes memory notes for the user to approve; they are not active memory yet.",
 		promptSnippet: "Save something future sessions should know for the next memory review",
 		promptGuidelines: [
-			"Use memory_inbox when the user asks you to remember something, or when you learn something clearly worth keeping for future sessions that cannot be quickly rediscovered from the code — a preference or standing request, a verified procedure, a pitfall and its fix, a decision and its reason.",
+			"Use memory_inbox when the user asks you to remember something, or when you learn something clearly worth keeping for future sessions that cannot be quickly rediscovered from the code — a preference or standing request, a verified procedure, a pitfall and its fix, a decision and its reason. Not for what you write into the repository (docs, code comments, commit messages, project files) or a cause you have not verified.",
 		],
 		parameters: Type.Object({
 			text: Type.String({ description: "A self-contained statement with the specifics (exact commands, paths, conditions, reasons)" }),

@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.1.4] - 2026-11-17
+
+### Changed
+
+- `memory_inbox` guideline: not for what the agent writes into the repository itself (docs, code comments, commit messages, project files) or for causes it has not verified.
+
 ## [0.1.3] - 2026-11-15
 
 ### Changed
