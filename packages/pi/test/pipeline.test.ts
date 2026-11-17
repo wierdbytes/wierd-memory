@@ -51,23 +51,34 @@ interface CuratorInput {
 class Script implements DreamLlm {
 	usage: Partial<Record<Stage, StageUsage>> = {};
 	calls: Array<{ stage: Stage; system: string; user: string }> = [];
-	review: (input: { comments: Array<{ id: string; note?: string; body: string }> }) => unknown = () => ({ ops: [] });
+	/** `amend`: what the pipeline sent the reply back for (asked once more, like Llm.json). */
+	review: (input: { comments: Array<{ id: string; note?: string; body: string }> }, amend?: string) => unknown = () => ({ ops: [] });
 	/** Replaces the scripted curator when set. */
-	curator?: (input: CuratorInput) => unknown;
+	curator?: (input: CuratorInput, amend?: string) => unknown;
+	/** What replies were sent back for, in order. */
+	amends: string[] = [];
 
 	totalCost(): number {
 		return Object.values(this.usage).reduce((s, u) => s + (u?.cost ?? 0), 0);
 	}
 
-	async json<T>(stage: Stage, _spec: StageModel, system: string, user: string, validate: (v: unknown) => T): Promise<T> {
-		this.calls.push({ stage, system, user });
-		const u = (this.usage[stage] ??= { calls: 0, input: 0, output: 0, cacheRead: 0, cost: 0, failures: 0 });
-		u.calls++;
-		u.cost += 0.01;
-		return validate(this.answer(stage, system, user));
+	async json<T>(stage: Stage, _spec: StageModel, system: string, user: string, validate: (v: unknown) => T, opts?: { amend?: (value: T) => string | undefined }): Promise<T> {
+		const call = (amend?: string) => {
+			this.calls.push({ stage, system, user });
+			const u = (this.usage[stage] ??= { calls: 0, input: 0, output: 0, cacheRead: 0, cost: 0, failures: 0 });
+			u.calls++;
+			u.cost += 0.01;
+			return validate(this.answer(stage, system, user, amend));
+		};
+		// Like Llm.json: a usable reply that should change is sent back once, and the next one is taken as it is.
+		const first = call();
+		const amend = opts?.amend?.(first);
+		if (!amend) return first;
+		this.amends.push(amend);
+		return call(amend);
 	}
 
-	private answer(stage: Stage, system: string, user: string): unknown {
+	private answer(stage: Stage, system: string, user: string, amend?: string): unknown {
 		if (stage === "cards") {
 			const entries = [...user.matchAll(/^\[([0-9a-f]+)\] USER: (.*)$/gm)];
 			return {
@@ -79,8 +90,8 @@ class Script implements DreamLlm {
 				memory_feedback: [],
 			};
 		}
-		if (stage === "analyze" && system.includes("left comments")) return this.review(JSON.parse(user));
-		if (stage === "analyze" && this.curator) return this.curator(JSON.parse(user));
+		if (stage === "analyze" && system.includes("left comments")) return this.review(JSON.parse(user), amend);
+		if (stage === "analyze" && this.curator) return this.curator(JSON.parse(user), amend);
 		if (stage === "analyze") {
 			const input = JSON.parse(user) as { sessions: Array<{ session: string; learnings: Array<{ statement: string; evidence: string[] }> }>; notes: { project: Array<{ id: string; title: string; body: string; off?: boolean }> }; inbox: Array<{ s: string; text: string }> };
 			const ops: unknown[] = [];
@@ -320,6 +331,62 @@ describe("a dream", () => {
 		expect((await app.reviews.view()).pending).toBe(0);
 	});
 
+	it("sends notes over the length limits back once and marks what is still over for the reviewer", async () => {
+		const words = (n: number) => Array.from({ length: n }, (_, i) => `слово${i}`).join(" ");
+		const count = (s: string | undefined) => (s ?? "").split(" ").length;
+		const approved = (await app.mem.notes()).find((n) => n.title.startsWith("Тесты"))?.id as string;
+		// Approved notes that are long already: a change that does not write their text is not held to the limits.
+		const longA = (await app.createNote({ scope: scope(), title: "Длинная одобренная заметка про выпуск", body: words(130), index: "none" })).id;
+		const longB = (await app.createNote({ scope: scope(), title: "Длинная одобренная заметка про деплой", body: words(140), index: "none" })).id;
+		await app.reviews.comment("сократи", longA);
+		const comment = (await app.state.comments()).find((c) => c.noteId === longA)?.id as string;
+		const item = await app.state.addInbox({ source: "user", text: "Про длину заметок", cwd: proj, projectKey: `local:${proj}`, scope: "project" });
+		const ev = [{ s: `inbox:${item.id}`, e: [] }];
+		const longTitle = `Заголовок ${"очень ".repeat(30)}длинный`;
+		const add = (ref: string, title: string, body: string) => ({ op: "add", ref, scope: "project", type: "fact", title, body, index: "none", rationale: "из inbox", evidence: ev });
+		const llm = new Script();
+		llm.review = (_input, amend) => ({ ops: [{ op: "update", ref: "r1", id: longA, body: words(amend ? 100 : 125), rationale: "по комментарию", evidence: [{ s: `comment:${comment}`, e: [] }] }], unhandled: [] });
+		llm.curator = (_input, amend) => ({
+			ops: [
+				// shortened when asked
+				add("a1", "Заметка, которую куратор сократит", words(amend ? 90 : 134)),
+				add("a2", "Короткая заметка", words(20)),
+				// still over after the request
+				add("a3", longTitle, words(10)),
+				{ op: "update", ref: "u1", id: approved, body: words(130), rationale: "дописано", evidence: ev },
+				{ op: "update", ref: "u2", id: longB, index: "pointer", when: "деплой", rationale: "нужна чаще", evidence: ev },
+			],
+		});
+		const { id } = await run(llm);
+		// each pass was asked once, about what it wrote over the limits and nothing else
+		expect(llm.amends).toHaveLength(2);
+		expect(llm.amends[0]).toStartWith(`Over the length limits of a note — r1 (update ${longA}): body is 125 words, limit 120. Shorten it:`);
+		const curatorAsk = llm.amends[1];
+		for (const s of ["a1 (add): body is 134 words, limit 120", `a3 (add): title is ${[...longTitle].length} chars, limit 160`, `u1 (update ${approved}): body is 130 words, limit 120`]) expect(curatorAsk).toContain(s);
+		for (const s of ["a2", "u2", longB]) expect(curatorAsk).not.toContain(s);
+		// the curator's prompt asks an update to rewrite the note, not to add to it
+		expect(llm.calls.find((c) => c.stage === "analyze" && c.system.includes("memory curator") && !c.system.includes("left comments"))?.system).toContain("An update rewrites the note to the current understanding");
+		const v = await app.reviews.view();
+		const byTitle = (t: string) => v.items.find((i) => i.note.title === t);
+		const byId = (nid: string) => v.items.find((i) => i.note.id === nid);
+		expect([count(byTitle("Заметка, которую куратор сократит")?.note.body), byTitle("Заметка, которую куратор сократит")?.remark]).toEqual([90, undefined]);
+		expect(byTitle("Короткая заметка")?.remark).toBeUndefined();
+		// kept as it is (never cut), with a remark
+		expect(byTitle(longTitle)?.remark).toBe(`over the length limits: title is ${[...longTitle].length} chars, limit 160`);
+		expect([count(byId(approved)?.note.body), byId(approved)?.remark]).toEqual([130, "over the length limits: body is 130 words, limit 120"]);
+		expect([count(byId(longA)?.note.body), byId(longA)?.remark]).toEqual([100, undefined]);
+		expect([byId(longB)?.kind, count(byId(longB)?.note.body), byId(longB)?.remark]).toEqual(["updated", 140, undefined]);
+		// the dream's report says it too
+		const report = (await app.state.run(id))?.report;
+		expect(report?.items.find((i) => i.id === approved)?.note).toBe("over the length limits: body is 130 words, limit 120");
+		expect(readFileSync(join(home, "memory", ".local", "runs", id, "report.md"), "utf-8")).toContain("  - over the length limits: body is 130 words, limit 120");
+		// leave nothing proposed, and approved memory as it was
+		await app.reviews.reject({ all: true }, "test");
+		await app.deleteNote(longA);
+		await app.deleteNote(longB);
+		expect((await app.reviews.view()).pending).toBe(0);
+	});
+
 	it("refiles a folder's sessions and memory when it gets a git remote", async () => {
 		const key = "github.com/o/proj";
 		const dir = keyToDir(key);
@@ -397,8 +464,8 @@ describe("a dream", () => {
 	type Checked = { ref: string; repo_docs?: Array<{ path: string; heading: string; snippet: string }>; gone?: string[] };
 	/** The scripted models, with a fact check that answers from what the checkout says. */
 	class RepoAware extends Script {
-		override async json<T>(stage: Stage, spec: StageModel, system: string, user: string, validate: (v: unknown) => T): Promise<T> {
-			if (stage !== "verify") return super.json(stage, spec, system, user, validate);
+		override async json<T>(stage: Stage, spec: StageModel, system: string, user: string, validate: (v: unknown) => T, opts?: { amend?: (value: T) => string | undefined }): Promise<T> {
+			if (stage !== "verify") return super.json(stage, spec, system, user, validate, opts);
 			this.calls.push({ stage, system, user });
 			const input = JSON.parse(user) as { proposals: Checked[] };
 			return validate({

@@ -22,6 +22,10 @@
  * 6. code applies what passed to an in-memory copy of the notes
  * 7. hand the result to the server: it writes the changes to the dreams
  *    branch, where they wait for the user — nothing becomes memory here
+ *
+ * Operations (4, 5) that write a note over the length limits of the prompt
+ * (NOTE_LIMITS) are sent back to the model once to be shortened; what is
+ * still over is proposed with a remark for the reviewer, never cut.
  */
 
 import { createHash } from "node:crypto";
@@ -66,6 +70,8 @@ import {
 	listSessionFiles,
 	type Note,
 	type Op,
+	opOverLimits,
+	overLimits,
 	type ParsedOps,
 	parseOps,
 	parseSession,
@@ -109,7 +115,8 @@ const REPO_DOCS_CHARS = 4000;
 export interface DreamLlm {
 	readonly usage: Partial<Record<Stage, StageUsage>>;
 	totalCost(): number;
-	json<T>(stage: Stage, spec: StageModel, system: string, user: string, validate: (v: unknown) => T, opts: { maxTokens: number; timeoutMs: number }): Promise<T>;
+	/** `opts.amend`: what a usable reply should still change; the model is asked once more, and a usable reply is never lost (llm.ts). */
+	json<T>(stage: Stage, spec: StageModel, system: string, user: string, validate: (v: unknown) => T, opts: { maxTokens: number; timeoutMs: number; amend?: (value: T) => string | undefined }): Promise<T>;
 }
 
 /** The server, as the dream needs it. */
@@ -594,6 +601,36 @@ function opTitle(op: Op): string {
 	}
 }
 
+/**
+ * What the curator is asked to shorten (once) when its operations write a note over the length limits its prompt
+ * gives (NOTE_LIMITS) — each named by its ref, so the model finds it in its own reply.
+ */
+export function shortenRequest(parsed: ParsedOps): string | undefined {
+	const over = parsed.ops.flatMap((op) => {
+		const found = opOverLimits(op);
+		return found.length ? [`${op.ref} (${op.op}${"id" in op ? ` ${op.id}` : ""}): ${found.join(", ")}`] : [];
+	});
+	if (!over.length) return undefined;
+	return `Over the length limits of a note — ${over.join("; ")}. Shorten ${over.length > 1 ? "them" : "it"}: keep what an agent acts on (commands, paths, conditions, reasons), drop background, the story of how it was found and what the repository already says; an update rewrites the note instead of adding to it.`;
+}
+
+/**
+ * The reviewer's remark on a change whose note text is still over the length limits after the curator was asked to
+ * shorten it (or the fact check's fix made it so). Only the text the change wrote counts: an update of the `index` of
+ * a long approved note is not the dream's doing.
+ */
+function overLimitsRemark(op: Op, fix: Verdict["fix"] | undefined, change: Change, ws: Workspace): string | undefined {
+	const n = change.kind === "merged" ? undefined : ws.find(change.newId ?? change.noteId ?? "");
+	if (!n) return undefined;
+	const found =
+		op.op === "add" || op.op === "supersede"
+			? overLimits(n)
+			: op.op === "update"
+				? overLimits({ title: (fix?.title ?? op.title) !== undefined ? n.title : undefined, body: (fix?.body ?? op.body) !== undefined ? n.body : undefined, when: op.when !== undefined ? n.when : undefined })
+				: [];
+	return found.length ? `over the length limits: ${found.join(", ")}` : undefined;
+}
+
 function proposalForCheck(op: Op, ws: Workspace, startOf?: StartOf) {
 	const current = "id" in op ? ws.find(op.id) : undefined;
 	const base = { ref: op.ref, op: op.op, rationale: op.rationale, ...(current ? { current_note: noteForPrompt(current, startOf) } : {}) };
@@ -930,7 +967,7 @@ export async function dream(runId: string, deps: DreamDeps): Promise<DreamOutcom
 				]),
 			),
 		};
-		const parsed = await llm.json<ParsedOps>("analyze", cfg.models.analyze, prompt("review"), JSON.stringify(input, null, 1), parseOps, { maxTokens: 48_000, timeoutMs: 15 * MINUTE });
+		const parsed = await llm.json<ParsedOps>("analyze", cfg.models.analyze, prompt("review"), JSON.stringify(input, null, 1), parseOps, { maxTokens: 48_000, timeoutMs: 15 * MINUTE, amend: shortenRequest });
 		save("review.json", { input, parsed });
 		problems.push(...parsed.problems.map((p) => `review: ${p}`));
 		unhandled.push(...parsed.unhandled);
@@ -946,7 +983,11 @@ export async function dream(runId: string, deps: DreamDeps): Promise<DreamOutcom
 			const evidence: Evidence[] = (cited.length ? cited : feedback.map((c) => c.id)).map((id) => ({ s: `comment:${id}`, e: [], date, at: isoMinute(Date.now()), kind: "reviewer" }));
 			const res = applyOp(ws, op, { evidence });
 			if (!res.ok) rejected.push({ ref: op.ref, op: op.op, title: opTitle(op), reason: res.reason });
-			else changes.push({ ...res.change, rationale: op.rationale, evidence, source: "reviewer" });
+			else {
+				const long = overLimitsRemark(op, undefined, res.change, ws);
+				if (long) log(`  ${op.ref} ${op.op}: ${long}`);
+				changes.push({ ...res.change, note: [res.change.note, long].filter(Boolean).join(" · ") || undefined, rationale: op.rationale, evidence, source: "reviewer" });
+			}
 		}
 	}
 
@@ -1086,7 +1127,7 @@ export async function dream(runId: string, deps: DreamDeps): Promise<DreamOutcom
 		};
 		const charter = `Global: ${globalCharter}\n\nThis project (${key}): ${projectCharter}`;
 		const tag = `${keyToDir(key).slice(0, 60)}${recheck ? "-recheck" : ""}`;
-		const parsed = await llm.json<ParsedOps>("analyze", cfg.models.analyze, prompt("curator", { charter }), JSON.stringify(input, null, 1), parseOps, { maxTokens: 64_000, timeoutMs: 20 * MINUTE });
+		const parsed = await llm.json<ParsedOps>("analyze", cfg.models.analyze, prompt("curator", { charter }), JSON.stringify(input, null, 1), parseOps, { maxTokens: 64_000, timeoutMs: 20 * MINUTE, amend: shortenRequest });
 		save(`curator-${tag}.json`, { input, parsed });
 		problems.push(...parsed.problems.map((p) => `${shortKey(key)}: ${p}`));
 		log(`curator ${shortKey(key)}${recheck ? " (recheck)" : ""}: ${parsed.ops.length} op(s)`);
@@ -1176,9 +1217,11 @@ export async function dream(runId: string, deps: DreamDeps): Promise<DreamOutcom
 				rejected.push({ ref: r.op.ref, op: r.op.op, title: opTitle(r.op), reason: res.reason });
 				continue;
 			}
+			const long = overLimitsRemark(r.op, d.fix, res.change, ws);
+			if (long) log(`  ${r.op.ref} ${r.op.op}: ${long}`);
 			changes.push({
 				...res.change,
-				note: [res.change.note, guardNote].filter(Boolean).join(" · ") || undefined,
+				note: [res.change.note, guardNote, long].filter(Boolean).join(" · ") || undefined,
 				rationale: r.op.rationale,
 				evidence: r.evidence,
 				source: "curator",

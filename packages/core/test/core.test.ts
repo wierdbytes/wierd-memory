@@ -10,6 +10,7 @@ import {
 	buildIndex,
 	changedColumns,
 	checkDue,
+	countWords,
 	defaults,
 	diffNotes,
 	keyOfScope,
@@ -19,7 +20,10 @@ import {
 	markdownHeadings,
 	mergeNote,
 	type Note,
+	NOTE_LIMITS,
 	type Op,
+	opOverLimits,
+	overLimits,
 	parseOps,
 	pendingSessions,
 	projectScope,
@@ -57,6 +61,31 @@ describe("parseOps", () => {
 		expect(p.problems.length).toBe(3);
 		expect(p.unhandled).toEqual([{ comment: "c1", reason: "r" }]);
 		expect(() => parseOps({ nope: 1 })).toThrow();
+	});
+});
+
+describe("length limits of a note", () => {
+	it("counts words as a reader does", () => {
+		expect(countWords("")).toBe(0);
+		// a dash, an arrow, list markers and a code fence are not words; a path, a flag and `make test` are
+		expect(countWords("Запускать `make test` — иначе → ошибка.\n\n- флаг --frozen-lockfile\n2. путь ~/.pi/agent/settings.json\n```sh\nbun install\n```")).toBe(11);
+		expect(countWords("1.5 GB, 3 раза")).toBe(4);
+	});
+
+	it("says what is over the limits the prompt gives, for the fields given", () => {
+		const words = (n: number) => Array.from({ length: n }, (_, i) => `слово${i}`).join(" ");
+		expect(NOTE_LIMITS).toEqual({ titleChars: 160, bodyWords: 120, whenChars: 80 });
+		expect(overLimits({ title: "я".repeat(160), body: words(120), when: "к".repeat(80) })).toEqual([]);
+		expect(overLimits({ title: "я".repeat(161), body: words(134), when: "к".repeat(81) })).toEqual(["title is 161 chars, limit 160", "body is 134 words, limit 120", "when is 81 chars, limit 80"]);
+		// an update that does not touch the body is not held to it
+		const update = { op: "update", ref: "u1", id: "m-abcdef", index: "none", rationale: "", evidence: [] } as Op;
+		expect(opOverLimits(update)).toEqual([]);
+		expect(opOverLimits({ ...update, body: words(121) } as Op)).toEqual(["body is 121 words, limit 120"]);
+		expect(opOverLimits({ op: "supersede", ref: "s1", id: "m-abcdef", replacement: { title: "я".repeat(170) }, rationale: "", evidence: [] })).toEqual(["title is 170 chars, limit 160"]);
+		expect(opOverLimits({ op: "deprecate", ref: "d1", id: "m-abcdef", rationale: words(500), evidence: [] })).toEqual([]);
+		// the prompt says the same numbers
+		const curator = systemPrompt("curator", { language: "Russian" });
+		expect(["≤ 160 chars", "≤ 120 words", "≤ 80 chars"].every((s) => curator.includes(s))).toBe(true);
 	});
 });
 

@@ -3,7 +3,9 @@
  * configured providers and credentials, OAuth included).
  *
  * `json()` asks for a JSON object, validates it, and on a bad reply shows the
- * model its own answer with the error and asks again (3 attempts). Transient
+ * model its own answer with the error and asks again (3 attempts). A usable
+ * reply that still needs a change (`amend`: a note over the length limits) is
+ * sent back once; it never fails the call. Transient
  * provider errors are retried with backoff. Usage and cost are tallied per
  * stage for the report.
  */
@@ -15,6 +17,15 @@ import type { Stage, StageModel, StageUsage } from "@wierd-memory/core";
 export interface CallOptions {
 	maxTokens: number;
 	timeoutMs: number;
+}
+
+export interface JsonOptions<T> extends CallOptions {
+	/**
+	 * What a usable reply still should change, as a message to the model (undefined: nothing). It is asked once more —
+	 * once only: a curator call is the dream's most expensive one — and its next usable reply is taken as it is; when none
+	 * comes, the first one is.
+	 */
+	amend?: (value: T) => string | undefined;
 }
 
 /** Pull a JSON value out of a model reply (bare, fenced, or embedded in prose). */
@@ -113,13 +124,16 @@ export class Llm {
 		throw new Error(`${stage} (${spec.model}): ${lastErr}`);
 	}
 
-	async json<T>(stage: Stage, spec: StageModel, system: string, user: string, validate: (v: unknown) => T, opts: CallOptions): Promise<T> {
+	async json<T>(stage: Stage, spec: StageModel, system: string, user: string, validate: (v: unknown) => T, opts: JsonOptions<T>): Promise<T> {
 		const messages: Message[] = [{ role: "user", content: user, timestamp: Date.now() }];
 		let lastErr = "";
+		/** The usable reply that was sent back to be amended. */
+		let first: { value: T } | undefined;
 		for (let attempt = 0; attempt < 3; attempt++) {
 			const msg = await this.complete(stage, spec, system, messages, opts);
+			let value: T;
 			try {
-				return validate(extractJson(replyText(msg)));
+				value = validate(extractJson(replyText(msg)));
 			} catch (err) {
 				lastErr = err instanceof Error ? err.message : String(err);
 				if (msg.stopReason === "length") lastErr += " (the reply hit the output limit — be more concise)";
@@ -129,7 +143,19 @@ export class Llm {
 					content: `Your reply could not be used: ${lastErr}. Reply again with only the corrected JSON object.`,
 					timestamp: Date.now(),
 				});
+				continue;
 			}
+			// Once, and never after the last attempt: there would be no answer to take.
+			const amend = !first && attempt < 2 ? opts.amend?.(value) : undefined;
+			if (!amend) return value;
+			first = { value };
+			this.log(`  ! ${stage}: ${amend.slice(0, 200)} — asking once more`);
+			// The whole object again: a model asked to fix some items tends to send only those.
+			messages.push(msg, { role: "user", content: `${amend}\nReply again with the whole corrected JSON object — every item, not only the ones you change.`, timestamp: Date.now() });
+		}
+		if (first) {
+			this.log(`  ! ${stage}: no usable reply after the request to amend (${lastErr.slice(0, 160)}), keeping the one before`);
+			return first.value;
 		}
 		throw new Error(`${stage}: no usable JSON after 3 attempts: ${lastErr}`);
 	}

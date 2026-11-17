@@ -155,6 +155,7 @@ function printItem(it: ReviewItem, full: boolean): void {
 	if (it.note.body) out(it.note.body.split("\n").map((l) => `  │ ${l}`).join("\n"));
 	for (const w of it.why) out(`  ${dim("why:")} ${w}`);
 	if (it.check) out(`  ${dim("check:")} ${it.check.verdict}${it.check.corrected ? " (corrected)" : ""}${it.check.reason ? ` — ${it.check.reason}` : ""}`);
+	if (it.remark) out(`  ${dim("remark:")} ${it.remark}`);
 	for (const r of it.risky) out(`  ⚠ ${r}`);
 	if (it.newerEvidence?.length) out("  ⚠ the note it closes has newer evidence");
 	out();

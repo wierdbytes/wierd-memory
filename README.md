@@ -222,6 +222,10 @@ adds at most `dream.maxNewNotesPerPass` notes (the rest are dropped and listed i
 an earlier dream's proposal you have not decided yet (a duplicate, wrong, below the bar): that needs only a reason,
 no evidence or fact check, since it removes nothing approved.
 
+Notes stay short: a title of at most 160 characters, a body of at most 120 words, a `when` of at most 80 — and an
+update rewrites a note to what is known now instead of adding to it. A curator reply that writes a note over those
+limits is sent back once to be shortened; what is still over is proposed as it is, with a remark in the review.
+
 Proposals wait while the code moves on. A project no session of a dream was about still gets a **recheck** when its
 waiting proposals name what its repository had and has no more (a type, a script, a path): a curator pass without
 sessions, which also sees the docs that say the same, and may only withdraw those proposals or update them (an

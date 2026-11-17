@@ -89,7 +89,9 @@ A `ReviewItem`:
 - `reach` — how the note would reach agents once accepted.
 - `why` (the dream's rationale), `check` (the fact check: `supported`, or `partial` + `corrected`), `evidence` (what the
   proposal adds: session ids + entry ids; titles in `ReviewView.sessionTitles`, lines via `POST /api/evidence`),
-  `risky`, `newerEvidence` (the note being closed was seen in newer sessions than this change relies on), `remark`.
+  `risky`, `newerEvidence` (the note being closed was seen in newer sessions than this change relies on), `remark`
+  (what the dreams noted about it: moved out of global, still over the length limits of a note after the curator was
+  asked to shorten it, …).
 - `runs` — the dreams that proposed or touched it; `version` — a short hash of what deciding the item would change
   (the item's notes on both branches, or both versions of the skill): the same as long as nothing changed.
 - `editable` — text can be edited before accepting (false for closing / confirming).

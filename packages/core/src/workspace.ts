@@ -199,6 +199,42 @@ export const DUPLICATE_THRESHOLD = 0.72;
 export const MAX_TITLE = 240;
 export const MAX_BODY = 4000;
 
+/**
+ * The length of a note the curator's and the review prompt ask for (prompts.ts gives the same numbers). Notes grew on
+ * every update while only the prompt said so: a dream sends an operation over them back to the model once, and what
+ * is still over is proposed with a remark for the reviewer — never cut, which would lose the specifics at the end.
+ * MAX_TITLE / MAX_BODY above are only the hard stop.
+ */
+export const NOTE_LIMITS = { titleChars: 160, bodyWords: 120, whenChars: 80 } as const;
+
+/**
+ * Words the way a reader of the prompt counts them: what stands between spaces and holds a letter or a digit — a
+ * path, a flag or each word of `make test` is one, a "—", "→", a code fence or a list marker is none.
+ */
+export function countWords(text: string): number {
+	let n = 0;
+	for (const line of text.split("\n")) for (const w of line.replace(/^\s*(?:[-*+>]|\d+[.)])\s+/, "").split(/\s+/)) if (/[\p{L}\p{N}]/u.test(w) && !/^`{3}/.test(w)) n++;
+	return n;
+}
+
+/** What of a note's text is over NOTE_LIMITS (`body is 134 words, limit 120`); a field not given is not checked. */
+export function overLimits(f: Pick<NoteFields, "title" | "body" | "when">): string[] {
+	const out: string[] = [];
+	const chars = (s: string) => [...s].length;
+	if (f.title && chars(f.title) > NOTE_LIMITS.titleChars) out.push(`title is ${chars(f.title)} chars, limit ${NOTE_LIMITS.titleChars}`);
+	const words = f.body ? countWords(f.body) : 0;
+	if (words > NOTE_LIMITS.bodyWords) out.push(`body is ${words} words, limit ${NOTE_LIMITS.bodyWords}`);
+	if (f.when && chars(f.when) > NOTE_LIMITS.whenChars) out.push(`when is ${chars(f.when)} chars, limit ${NOTE_LIMITS.whenChars}`);
+	return out;
+}
+
+/** The note text an operation writes that is over NOTE_LIMITS (add, update, supersede: the others write none). */
+export function opOverLimits(op: Op): string[] {
+	if (op.op === "add" || op.op === "update") return overLimits(op);
+	if (op.op === "supersede") return overLimits(op.replacement);
+	return [];
+}
+
 /** Problems that make text unacceptable as memory. */
 export function lintText(text: string): string[] {
 	const out: string[] = [];
