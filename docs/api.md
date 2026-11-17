@@ -105,7 +105,7 @@ Evidence a review leaves on a note: `{ s: "comment:<id>", e: [] }` — a dream c
 |---|---|
 | `GET /api/dreams?limit=` | `DreamStatus`: `running`, `last`, `due` (and why / why not), `schedule`, recent `runs`. |
 | `POST /api/dreams` | `{ mode: "run" \| "review" \| "dry" \| "reindex", sinceDays?, maxSessions? }` → `RunInfo & { log }`. Starts a dream in a background pi process. 409 when one runs. |
-| `GET /api/dreams/:id` | `RunInfo & { opts, report?: ReportData }`; `?format=md` — the report as Markdown. |
+| `GET /api/dreams/:id` | `RunInfo & { opts, report?: ReportData }`; `?format=md` — the report as Markdown. `report.tools[stage]`: what the curator / fact check read with the repository tools (calls by tool, output tokens, passes that hit `dream.repoTools`); `report.usage[stage].toolCost` / `toolRounds`: the model calls after tool results. |
 | `GET /api/dreams/:id/log?tail=<lines>` | The dream's log (text). |
 | `POST /api/dreams/:id/cancel` | Stops it. |
 

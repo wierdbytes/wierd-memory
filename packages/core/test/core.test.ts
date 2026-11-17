@@ -379,6 +379,9 @@ describe("misc", () => {
 		expect(systemPrompt("curator", { language: "Russian", maxNewNotes: 4 })).toContain("At most 4 new notes");
 		expect(defaults().dream.maxNewNotesPerPass).toBe(3);
 		expect(sanitize({ dream: { maxNewNotesPerPass: 500 } }).dream.maxNewNotesPerPass).toBe(50);
+		expect(defaults().dream.repoTools).toEqual({ curatorCalls: 24, verifyCalls: 12, outputTokens: 40_000, otherProjects: true });
+		expect(sanitize({ dream: { repoTools: { curatorCalls: 0, verifyCalls: 1e6, outputTokens: "x", otherProjects: false } } }).dream.repoTools).toEqual({ curatorCalls: 0, verifyCalls: 200, outputTokens: 40_000, otherProjects: false });
+		expect(sanitize({ dream: {} }).dream.repoTools).toEqual(defaults().dream.repoTools);
 		expect(systemPrompt("cards", { language: "Russian" }, "custom {{language}}")).toBe("custom Russian");
 		expect(systemPrompt("review", { language: "English" })).toContain(`{"s": "comment:<commentId>", "e": []}`);
 		// every placeholder is filled; what the checkout says is explained to the curator and the fact check
@@ -388,6 +391,8 @@ describe("misc", () => {
 		expect(systemPrompt("curator", vars)).toContain('"repo_check"');
 		expect(systemPrompt("verify", vars)).toContain('- "documented"');
 		expect(systemPrompt("verify", vars)).toContain('"gone"');
+		// both are told about the repository tools they may get
+		for (const name of ["curator", "verify"] as const) expect(systemPrompt(name, vars)).toContain('"repo_access"');
 	});
 });
 

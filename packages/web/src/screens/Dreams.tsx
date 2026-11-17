@@ -3,7 +3,7 @@
  * memory — start one, watch it, see what past ones reported.
  */
 
-import type { DreamStatus, ReportData, ReportItem, RunInfo, ScopeInfo, Stage } from "@wierd-memory/core";
+import type { DreamStatus, ReportData, ReportItem, RunInfo, ScopeInfo, Stage, StageUsage, ToolUsage } from "@wierd-memory/core";
 import { useEffect, useRef, useState } from "react";
 import { api, type DreamMode, type RunDetail } from "../api.ts";
 import { EvidenceChips } from "../components/Evidence.tsx";
@@ -318,6 +318,22 @@ function RunPage({ id }: { id: string }) {
 	);
 }
 
+/** `18 calls · $0.41`, the tools one by one and what was read in the tooltip. */
+function ToolsCell({ tools: t, usage: u, unit }: { tools?: ToolUsage; usage: StageUsage; unit: string }) {
+	if (!t?.sessions) return <td className="num" />;
+	const by = Object.entries(t.byTool)
+		.sort((a, b) => b[1] - a[1])
+		.map(([name, n]) => `${name} ${n}`)
+		.join(", ");
+	const title = `${plural(t.sessions, unit, `${unit}es`)} with tools${by ? `: ${by}` : ""} · ~${t.outputTokens.toLocaleString("en-US")} tokens read${t.errors ? ` · ${t.errors} failed` : ""}${t.capped ? ` · ${t.capped} hit the limit` : ""}${u.toolRounds ? ` · ${u.toolRounds} model round(s) after tool results` : ""}`;
+	return (
+		<td className="num" title={title}>
+			{plural(t.calls, "call")}
+			{u.toolCost ? ` · ${money(u.toolCost)}` : ""}
+		</td>
+	);
+}
+
 function Report({ report: d, scopes }: { report: RunDetail["report"] & ReportData; scopes: ScopeInfo[] }) {
 	const items = d.items ?? [];
 	const byScope = new Map<string, ReportItem[]>();
@@ -325,6 +341,9 @@ function Report({ report: d, scopes }: { report: RunDetail["report"] & ReportDat
 	const usage = d.usage ?? {};
 	const stages = STAGES.filter((s) => usage[s]);
 	const total = stages.reduce((n, s) => n + (usage[s]?.cost ?? 0), 0);
+	// What the curator and the fact check read of the checkouts (older reports have none).
+	const tools = d.tools ?? {};
+	const withTools = stages.some((s) => tools[s]?.sessions);
 	const scopeName = (id: string) => scopes.find((s) => s.id === id)?.name ?? scopeLabel(id);
 	return (
 		<>
@@ -461,6 +480,7 @@ function Report({ report: d, scopes }: { report: RunDetail["report"] & ReportDat
 								<th className="num">Cached</th>
 								<th className="num">Output</th>
 								<th className="num">Failures</th>
+								{withTools ? <th className="num" title="Calls of the read-only repository tools, and what the model rounds after their results cost (part of Cost)">Repo tools</th> : null}
 								<th className="num">Cost</th>
 							</tr>
 						</thead>
@@ -477,6 +497,7 @@ function Report({ report: d, scopes }: { report: RunDetail["report"] & ReportDat
 										<td className="num">{u.cacheRead.toLocaleString("en-US")}</td>
 										<td className="num">{u.output.toLocaleString("en-US")}</td>
 										<td className={cls("num", u.failures > 0 && "text-red")}>{u.failures || ""}</td>
+										{withTools ? <ToolsCell tools={tools[s]} usage={u} unit={s === "verify" ? "batch" : "pass"} /> : null}
 										<td className="num">{money(u.cost)}</td>
 									</tr>
 								);

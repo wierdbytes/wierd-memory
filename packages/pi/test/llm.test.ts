@@ -1,83 +1,119 @@
 /**
- * `Llm.json()` against a scripted model registry: a reply that cannot be used is asked for again, a usable one that
- * writes a note over the length limits is sent back once to be shortened, and a usable reply is never lost.
+ * The tool loop of the dream's model calls, against a scripted model registry: tool calls are answered from a real
+ * checkout, the budget ends the loop, what the rounds after tool results cost is tallied apart.
  */
 
-import { describe, expect, it } from "bun:test";
-import type { Message } from "@earendil-works/pi-ai";
+import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import type { AssistantMessage, Context, Message, ToolCall } from "@earendil-works/pi-ai";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { type ParsedOps, parseOps } from "@wierd-memory/core";
+import { RepoTools } from "@wierd-memory/core";
 import { Llm } from "../llm.ts";
-import { shortenRequest } from "../pipeline.ts";
 
-/** A model that answers with `replies`, one per call, and remembers what each call was sent. */
-function scripted(replies: string[]) {
-	const sent: Message[][] = [];
+let root: string;
+
+beforeAll(() => {
+	root = mkdtempSync(join(tmpdir(), "wmem-llm-"));
+	writeFileSync(join(root, "tool.sh"), "#!/bin/sh\n# Output is capped at 50 lines.\n");
+});
+
+afterAll(() => rmSync(root, { recursive: true, force: true }));
+
+type Request = { messages: Message[]; tools?: string[]; toolChoice?: string };
+
+/** A registry whose model answers with `reply(request number, request)`. */
+function registry(reply: (n: number, req: Request) => AssistantMessage["content"]) {
+	const requests: Request[] = [];
 	const ctx = {
 		modelRegistry: {
-			find: () => ({ id: "m", provider: "p", reasoning: false }),
+			find: () => ({ id: "m", provider: "p", api: "x", reasoning: false }),
 			hasConfiguredAuth: () => true,
-			streamSimple: (_model: unknown, c: { messages: Message[] }) => {
-				sent.push([...c.messages]);
-				const text = replies.shift() ?? "";
-				return { result: async () => ({ role: "assistant", content: [{ type: "text", text }], stopReason: "stop", usage: { input: 1, output: 1, cacheRead: 0, cost: { total: 0.01 } } }) };
+			streamSimple: (_model: unknown, context: Context, options: { toolChoice?: string }) => {
+				const req = { messages: [...context.messages], tools: context.tools?.map((t) => t.name), toolChoice: options.toolChoice };
+				requests.push(req);
+				const content = reply(requests.length, req);
+				const msg = {
+					role: "assistant",
+					content,
+					api: "x",
+					provider: "p",
+					model: "m",
+					usage: { input: 100, output: 10, cacheRead: 0, cacheWrite: 0, totalTokens: 110, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0.01 * requests.length } },
+					stopReason: content.some((c) => c.type === "toolCall") ? "toolUse" : "stop",
+					timestamp: Date.now(),
+				} as AssistantMessage;
+				return { result: async () => msg };
 			},
 		},
 	} as unknown as ExtensionContext;
-	const logs: string[] = [];
-	return { llm: new Llm(ctx, (m) => logs.push(m)), sent, logs };
+	return { ctx, requests };
 }
 
-const words = (n: number) => Array.from({ length: n }, (_, i) => `слово${i}`).join(" ");
-const reply = (...bodies: number[]) => JSON.stringify({ ops: bodies.map((n, i) => ({ op: "add", ref: `op${i + 1}`, scope: "project", type: "fact", title: `Заметка ${i + 1}`, body: words(n), index: "none", rationale: "r", evidence: [{ s: "inbox:i1", e: [] }] })) });
-const ask = (llm: Llm) => llm.json<ParsedOps>("analyze", { model: "p/m", thinking: "off" }, "system", "input", parseOps, { maxTokens: 1000, timeoutMs: 10_000, amend: shortenRequest });
-const lastText = (msgs: Message[]) => {
-	const m = msgs.at(-1);
-	return typeof m?.content === "string" ? m.content : "";
-};
-const bodyWords = (p: ParsedOps) => p.ops.map((o) => (o.op === "add" ? (o.body ?? "").split(" ").length : 0));
+const call = (id: string, name: string, args: Record<string, unknown>): ToolCall => ({ type: "toolCall", id, name, arguments: args as ToolCall["arguments"] });
+const text = (t: string) => ({ type: "text" as const, text: t });
+const spec = { model: "p/m", thinking: "off" as const };
+const opts = { maxTokens: 1000, timeoutMs: 60_000 };
+const valid = (v: unknown) => v as { ok: boolean };
 
-describe("Llm.json", () => {
-	it("sends a note over the length limits back once, with what is over, and takes the next usable reply", async () => {
-		const { llm, sent, logs } = scripted([reply(30, 134), reply(30, 90)]);
-		const out = await ask(llm);
-		expect(bodyWords(out)).toEqual([30, 90]);
-		expect(sent.length).toBe(2);
-		const request = lastText(sent[1]);
-		expect(request).toContain("op2 (add): body is 134 words, limit 120");
-		expect(request).not.toContain("op1");
-		expect(request).toContain("the whole corrected JSON object");
-		// the model sees its own reply before the request
-		expect(sent[1].map((m) => m.role)).toEqual(["user", "assistant", "user"]);
-		expect(logs.some((l) => l.includes("asking once more"))).toBe(true);
-		expect(llm.usage.analyze?.calls).toBe(2);
+describe("the tool loop", () => {
+	it("answers the model's tool calls from the checkout, then takes its JSON", async () => {
+		const { ctx, requests } = registry((n) => (n === 1 ? [text("let me look"), call("c1", "grep", { pattern: "capped at", literal: true })] : [text('{"ok": true}')]));
+		const llm = new Llm(ctx, () => {});
+		const tools = new RepoTools([{ name: "local:x", root }], { maxCalls: 5, maxOutputChars: 10_000 }, { rg: false });
+		expect(await llm.json("analyze", spec, "sys", "input", valid, { ...opts, tools })).toEqual({ ok: true });
+		expect(requests.map((r) => [r.toolChoice, r.tools?.length])).toEqual([
+			["auto", 6],
+			["auto", 6],
+		]);
+		const result = requests[1].messages.at(-1) as Extract<Message, { role: "toolResult" }>;
+		expect(result).toMatchObject({ role: "toolResult", toolCallId: "c1", toolName: "grep", isError: false });
+		expect(result.content[0]).toMatchObject({ type: "text", text: expect.stringContaining("tool.sh:2:# Output is capped at 50 lines.") });
+		// the second call follows tool results: its cost is what the tools cost
+		expect(llm.usage.analyze).toMatchObject({ calls: 2, toolRounds: 1, toolCost: 0.02 });
+		expect(llm.usage.analyze?.cost).toBeCloseTo(0.03);
+		expect(tools.stats).toMatchObject({ calls: 1, byTool: { grep: 1 } });
 	});
 
-	it("asks only once: a reply still over the limits is taken as it is", async () => {
-		const { llm, sent } = scripted([reply(150), reply(125), reply(10)]);
-		expect(bodyWords(await ask(llm))).toEqual([125]);
-		expect(sent.length).toBe(2);
+	it("past the budget the model has to answer", async () => {
+		const { ctx, requests } = registry((n) => (n === 1 ? [call("a", "ls", {}), call("b", "read", { path: "tool.sh" })] : [text('```json\n{"ok": true}\n```')]));
+		const tools = new RepoTools([{ name: "local:x", root }], { maxCalls: 1, maxOutputChars: 10_000 });
+		expect(await new Llm(ctx, () => {}).json("verify", spec, "sys", "input", valid, { ...opts, tools })).toEqual({ ok: true });
+		const results = requests[1].messages.filter((m) => m.role === "toolResult") as Array<Extract<Message, { role: "toolResult" }>>;
+		expect(results.map((r) => [r.toolCallId, r.isError])).toEqual([
+			["a", false],
+			["b", true],
+		]);
+		expect(results[1].content[0]).toMatchObject({ text: expect.stringContaining("Refused") });
+		// the tools stay declared (the conversation has calls in it), but may not be called
+		expect(requests[1].toolChoice).toBe("none");
+		expect(requests[1].tools?.length).toBe(6);
 	});
 
-	it("keeps the first usable reply when the ones after the request cannot be used", async () => {
-		const { llm, sent, logs } = scripted([reply(140), "not json", '{"nope": 1}']);
-		expect(bodyWords(await ask(llm))).toEqual([140]);
-		expect(sent.length).toBe(3);
-		expect(lastText(sent[2])).toContain("could not be used");
-		expect(logs.at(-1)).toContain("keeping the one before");
+	it("stops a model that keeps calling tools, and asks again for JSON it cannot use", async () => {
+		const { ctx, requests } = registry(() => [call(`c${Math.random()}`, "ls", {})]);
+		const tools = new RepoTools([{ name: "local:x", root }], { maxCalls: 2, maxOutputChars: 10_000 });
+		await expect(new Llm(ctx, () => {}).json("analyze", spec, "sys", "input", valid, { ...opts, tools })).rejects.toThrow("kept calling tools");
+		expect(requests.length).toBe(6);
+		expect(tools.stats.calls).toBe(2);
+		// a bad answer is still asked again, tools or not
+		const again = registry((n) => [text(n === 1 ? "no json here" : '{"ok": false}')]);
+		expect(await new Llm(again.ctx, () => {}).json("cards", spec, "sys", "input", valid, opts)).toEqual({ ok: false });
+		expect(again.requests.map((r) => [r.toolChoice, r.tools])).toEqual([
+			[undefined, undefined],
+			[undefined, undefined],
+		]);
+		expect(again.requests[1].messages.at(-1)).toMatchObject({ role: "user", content: expect.stringContaining("could not be used") });
 	});
-
-	it("does not ask to shorten on the last attempt, and still fails when no reply is usable", async () => {
-		const late = scripted(["x", "y", reply(140)]);
-		expect(bodyWords(await ask(late.llm))).toEqual([140]);
-		expect(late.sent.length).toBe(3);
-		const none = scripted(["x", "y", "z"]);
-		await expect(ask(none.llm)).rejects.toThrow("no usable JSON after 3 attempts");
-	});
-
-	it("returns a reply within the limits at once", async () => {
-		const { llm, sent } = scripted([reply(120)]);
-		expect(bodyWords(await ask(llm))).toEqual([120]);
-		expect(sent.length).toBe(1);
+	it("sends a reply over what `amend` asks back once, after tool rounds too", async () => {
+		// tool round, then a reply to amend, then the amended one: tool rounds are not attempts
+		const { ctx, requests } = registry((n) => (n === 1 ? [call("c1", "ls", {})] : [text(n === 2 ? '{"ok": false}' : '{"ok": true}')]));
+		const tools = new RepoTools([{ name: "local:x", root }], { maxCalls: 5, maxOutputChars: 10_000 }, { rg: false });
+		const amend = (v: { ok: boolean }) => (v.ok ? undefined : "make it ok");
+		expect(await new Llm(ctx, () => {}).json("analyze", spec, "sys", "input", valid, { ...opts, tools, amend })).toEqual({ ok: true });
+		expect(requests.length).toBe(3);
+		expect(requests[2].messages.at(-1)).toMatchObject({ role: "user", content: expect.stringContaining("make it ok") });
 	});
 });
+

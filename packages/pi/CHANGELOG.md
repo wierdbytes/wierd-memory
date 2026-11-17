@@ -5,6 +5,7 @@
 ### Changed
 
 - `memory_inbox` guideline: not for what the agent writes into the repository itself (docs, code comments, commit messages, project files) or for causes it has not verified.
+- Bundled core synced with the server (dream setting `dream.repoTools`, curator and fact-check prompts, note length limits).
 
 ## [0.1.3] - 2026-11-15
 
