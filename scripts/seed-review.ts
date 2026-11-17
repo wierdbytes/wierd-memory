@@ -1,21 +1,27 @@
 /**
  * Fill a server with a made-up dream so the review can be tried by hand:
  *
- *   WMEM_URL=http://127.0.0.1:17433 bun scripts/seed-review.ts
+ *   WMEM_URL=http://127.0.0.1:<your sandbox's port> bun scripts/seed-review.ts
  *
  * It proposes one change of every kind against the notes the server has
  * (new notes, an edit, a move, a replacement, a closed note, confirmations,
  * a risky note, a skill, an AGENTS.md edit) and leaves a review comment.
  * Run it again to add a second dream's proposals to the same dreams branch.
  * Never point it at the real server unless you want those proposals there.
+ * WMEM_URL has no default: a fixed port (or the real server's) is what other
+ * agents' sandboxes and the user's memory would collide on.
  */
 
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { applyOp, type DreamSubmit, type DreamSubmitResult, type DreamWorkspace, type Evidence, isSessionEvidence, type Op, type ReportItem, today, Workspace } from "../packages/core/src/index.ts";
 
-const base = (process.env.WMEM_URL || "http://127.0.0.1:17433").replace(/\/+$/, "");
+if (!process.env.WMEM_URL) {
+	console.error("set WMEM_URL to your sandbox server, e.g. WMEM_URL=http://127.0.0.1:<port> (AGENTS.md, Checks)");
+	process.exit(1);
+}
+const base = process.env.WMEM_URL.replace(/\/+$/, "");
 
 async function api<T>(method: string, path: string, body?: unknown): Promise<T> {
 	const res = await fetch(`${base}${path}`, { method, headers: { "x-wmem-client": "seed", ...(body ? { "content-type": "application/json" } : {}) }, body: body ? JSON.stringify(body) : undefined });
@@ -44,8 +50,8 @@ const [upd, sup, dep, mov, conf1, conf2] = [fresh(1), fresh(2), fresh(3), fresh(
 const proj = projects[0] ?? "global";
 const other = projects.find((p) => p !== mov.scope) ?? "global";
 
-const repo = join(tmpdir(), "wmem-seed-repo");
-mkdirSync(repo, { recursive: true });
+// A folder of this run's own: another agent may be seeding its sandbox at the same time.
+const repo = mkdtempSync(join(tmpdir(), "wmem-seed-repo-"));
 writeFileSync(join(repo, "AGENTS.md"), "# Demo repo\n\n## Workflow\n\n- Run `make test` before committing.\n- Deploy with `make deploy`.\n");
 
 const ops: Array<{ op: Op; ev: Evidence[]; why: string; check?: ReportItem["check"]; newer?: Evidence[]; remark?: string }> = [
@@ -131,7 +137,7 @@ const sub: DreamSubmit = {
 	marks: {},
 	inboxDone: [],
 	commentsDone: [],
-	agents: [{ projectKey: "local:/tmp/wmem-seed-repo", repoRoot: repo, rel: "AGENTS.md", summary: "tests run with bun, not make", edits: [{ old: "- Run `make test` before committing.", new: "- Run `bun test` before committing." }, { old: "", new: "## Releases\n\n- Bump the version and add a CHANGELOG entry in the same commit." }], rationale: ["В двух сессиях агент запускал `make test`, которого больше нет.", "Пользователь дважды просил держать версию и changelog в одном коммите."] }],
+	agents: [{ projectKey: `local:${repo}`, repoRoot: repo, rel: "AGENTS.md", summary: "tests run with bun, not make", edits: [{ old: "- Run `make test` before committing.", new: "- Run `bun test` before committing." }, { old: "", new: "## Releases\n\n- Bump the version and add a CHANGELOG entry in the same commit." }], rationale: ["В двух сессиях агент запускал `make test`, которого больше нет.", "Пользователь дважды просил держать версию и changelog в одном коммите."] }],
 	sessions: Object.keys(sessionTitles).length,
 	cost: 1.73,
 };

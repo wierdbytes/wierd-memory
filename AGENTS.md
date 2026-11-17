@@ -101,9 +101,11 @@ scripts/build-pi.ts     `bun run build:pi`: packages/pi/dist — index.js (core 
   `version` and `packages/pi/CHANGELOG.md`; CI publishes on push to main.
 - The mod: `wmem herdr install` runs `herdr-app check`.
 - To try something by hand use a sandbox server, never the real one (`~/.wierd-memory`, port 7433 — its repository is
-  the user's real memory and is pushed to GitHub): `WMEM_HOME=/tmp/wmem-dev WMEM_PORT=17433 bin/wmem serve`, then
-  `WMEM_URL=http://127.0.0.1:17433 bun scripts/seed-review.ts`. CLI calls against it need the same `WMEM_HOME`
-  and `WMEM_PORT`. Stop it by its pid (`$WMEM_HOME/server.json`), never with `pkill -f "cli.ts serve"`: the real
+  the user's real memory and is pushed to GitHub). Agents work on this machine in parallel: give it a folder of its own
+  and a free port, never a fixed `/tmp` name or port — `H=$(mktemp -d); P=$((20000 + RANDOM % 20000));
+  WMEM_HOME=$H WMEM_PORT=$P bin/wmem serve &`, then `WMEM_URL=http://127.0.0.1:$P bun scripts/seed-review.ts` (a port
+  that is taken makes `serve` stop and say so: pick another). CLI calls against it need the same `WMEM_HOME` and
+  `WMEM_PORT`. Stop it by its pid (`$H/server.json`), never with `pkill -f "cli.ts serve"`: the real
   server runs the same command line from this checkout, and launchd restarts it at once — on whatever code is here.
 - After changing server code restart the real one: `wmem service restart`.
 

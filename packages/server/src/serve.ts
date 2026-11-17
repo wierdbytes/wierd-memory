@@ -24,7 +24,9 @@ export async function serve(): Promise<void> {
 	const port = loadConfig(homePaths().config).port;
 	const other = await alreadyUp(port);
 	if (other) {
-		console.error(`port ${port} already answers: ${other}. Stop it first (wmem service uninstall), or set another "port" in config.json.`);
+		// A sandbox (WMEM_PORT) on a port another one took must not be told to uninstall the real server's service.
+		const fix = process.env.WMEM_PORT ? "Pick another WMEM_PORT." : 'Stop it first (wmem service uninstall), or set another "port" in config.json.';
+		console.error(`port ${port} already answers: ${other}. ${fix}`);
 		process.exit(2);
 	}
 	const app = await App.start();

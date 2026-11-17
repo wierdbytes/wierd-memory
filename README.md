@@ -263,9 +263,12 @@ repository and versioned like the notes.
 bun test                 # core; the server on real git repositories in temp dirs (with a bare remote);
                          # a whole dream with scripted models
 bun run typecheck
-WMEM_HOME=/tmp/wmem-dev WMEM_PORT=17433 WMEM_DEV=1 bin/wmem serve     # a sandbox server (its own empty repository)
-WMEM_URL=http://127.0.0.1:17433 bun scripts/seed-review.ts            # a made-up dream's proposals to try the UI on
-                                                                      # (needs some notes with session evidence)
+H=$(mktemp -d); P=$((20000 + RANDOM % 20000))             # a folder and a port of its own, never fixed ones:
+                                                          # other agents may run sandboxes here at the same time
+WMEM_HOME=$H WMEM_PORT=$P WMEM_DEV=1 bin/wmem serve       # a sandbox server (its own empty repository);
+                                                          # stop it by the pid in $H/server.json
+WMEM_URL=http://127.0.0.1:$P bun scripts/seed-review.ts   # a made-up dream's proposals to try the UI on
+                                                          # (needs some notes with session evidence)
 ```
 
 See [`AGENTS.md`](AGENTS.md) for the layout of the code.
